@@ -1,0 +1,8 @@
+{
+  "name": "inbox-zero-codex-runtime",
+  "private": true,
+  "dependencies": {
+    "@openai/codex": "0.155.1",
+    "ai-sdk-provider-codex-cli": "2.2.1"
+  }
+}
