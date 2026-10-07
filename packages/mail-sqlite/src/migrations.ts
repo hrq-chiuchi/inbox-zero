@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS profile_state (
 
 CREATE TABLE IF NOT EXISTS accounts (
   account_id TEXT PRIMARY KEY,
-  provider TEXT NOT NULL CHECK (provider IN ('google', 'microsoft')),
+  provider TEXT NOT NULL CHECK (provider IN ('google', 'microsoft', 'imap')),
   generation TEXT NOT NULL,
   assistant_cursor TEXT
 );
@@ -384,6 +384,46 @@ export async function migrateMailbox(
   } catch {
     // column already exists on freshly created databases
   }
+  await migrateConversationIndex(tx);
+  await migrateMembershipIndex(tx);
+  const imapMigration = await tx.query(
+    "SELECT id FROM schema_migrations WHERE name = '0009-imap-provider'",
+  );
+  if (imapMigration.length === 0) {
+    // Restore rows after the replacement has its final name: renaming a
+    // populated table does not balance DROP TABLE's deferred FK violations.
+    // Deferred constraints do not defer ON DELETE CASCADE; preserve the two
+    // account-owned indexes before DROP TABLE applies those cascades.
+    await tx.exec(`
+      PRAGMA defer_foreign_keys = ON;
+      CREATE TABLE accounts_imap AS
+        SELECT account_id, provider, generation, assistant_cursor, connection
+        FROM accounts;
+      CREATE TABLE role_conversations_imap AS
+        SELECT * FROM effective_role_conversations;
+      CREATE TABLE message_memberships_imap AS
+        SELECT * FROM effective_message_memberships;
+      DROP TABLE accounts;
+      CREATE TABLE accounts (
+        account_id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL CHECK (provider IN ('google', 'microsoft', 'imap')),
+        generation TEXT NOT NULL,
+        assistant_cursor TEXT,
+        connection TEXT
+      );
+      INSERT INTO accounts
+        SELECT account_id, provider, generation, assistant_cursor, connection
+        FROM accounts_imap;
+      INSERT INTO effective_role_conversations
+        SELECT * FROM role_conversations_imap;
+      INSERT INTO effective_message_memberships
+        SELECT * FROM message_memberships_imap;
+      DROP TABLE role_conversations_imap;
+      DROP TABLE message_memberships_imap;
+      DROP TABLE accounts_imap;
+      INSERT INTO schema_migrations(id, name) VALUES (9, '0009-imap-provider');
+    `);
+  }
   await tx.exec(`
     CREATE INDEX IF NOT EXISTS operations_sent_message
       ON operations(account_id, sent_message_id)
@@ -405,8 +445,6 @@ export async function migrateMailbox(
       PRIMARY KEY (account_id, attachment_id)
     );
   `);
-  await migrateConversationIndex(tx);
-  await migrateMembershipIndex(tx);
   await migrateInboxUnreadExcludesArchive(tx);
   await migrateMessageSearchIndex(tx);
 }

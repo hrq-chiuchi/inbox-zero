@@ -15,6 +15,7 @@ import {
   messageKeySchema,
   operationKeySchema,
   accountIdSchema,
+  providerSchema,
 } from "../identities";
 import { saveDraftSchema, submitSendSchema } from "../drafts";
 
@@ -84,7 +85,7 @@ export const mailIpcRequestSchema = z.discriminatedUnion("method", [
     method: z.literal("requestSync"),
     payload: z.object({
       accountIds: z.array(accountIdSchema).min(1),
-      provider: z.enum(["google", "microsoft"]).optional(),
+      provider: providerSchema.optional(),
     }),
   }),
   z.object({

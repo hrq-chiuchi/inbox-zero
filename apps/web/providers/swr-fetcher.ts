@@ -3,6 +3,7 @@ import {
   EMAIL_ACCOUNT_HEADER,
   MICROSOFT_AUTH_EXPIRED_ERROR_CODE,
   NO_REFRESH_TOKEN_ERROR_CODE,
+  IMAP_AUTH_REQUIRED_ERROR_CODE,
 } from "@/utils/config";
 import { prefixPath } from "@/utils/path";
 import {
@@ -44,6 +45,15 @@ export const swrFetcher = async (
       }
     }
 
+    if (
+      emailAccountId &&
+      errorData.errorCode === IMAP_AUTH_REQUIRED_ERROR_CODE
+    ) {
+      redirectToSafeUrl(
+        `/accounts?reconnectEmailAccountId=${encodeURIComponent(emailAccountId)}`,
+      );
+      return;
+    }
     if (
       errorData.errorCode === NO_REFRESH_TOKEN_ERROR_CODE ||
       errorData.errorCode === MICROSOFT_AUTH_EXPIRED_ERROR_CODE

@@ -3,6 +3,15 @@
   "installCommand": "cd ../.. && node scripts/install-private-build.mjs && unset PRIVATE_BUILD_TOKEN && bash clone-marketing.sh && corepack pnpm install --filter '!@inboxzero/desktop' --no-frozen-lockfile",
   "ignoreCommand": "bash scripts/vercel-ignore-build.sh",
   "functions": {
+    "app/api/imap/poll/queue/route.ts": {
+      "experimentalTriggers": [
+        {
+          "type": "queue/v2beta",
+          "topic": "imap-poll",
+          "retryAfterSeconds": 60
+        }
+      ]
+    },
     "app/api/follow-up-reminders/account/queue/route.ts": {
       "experimentalTriggers": [
         {
@@ -97,6 +106,10 @@
     }
   ],
   "crons": [
+    {
+      "path": "/api/cron/imap-poll",
+      "schedule": "* * * * *"
+    },
     {
       "path": "/api/cron/scheduled-actions",
       "schedule": "* * * * *"

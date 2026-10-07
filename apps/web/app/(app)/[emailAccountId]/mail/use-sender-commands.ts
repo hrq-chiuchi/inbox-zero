@@ -19,6 +19,7 @@ export function useSenderCommands(
   const senderActions = useUnsubscribeSender(message);
   const {
     canManageAutoArchive,
+    canManageSenderActions,
     isAutoArchived,
     isAutoArchiveStatusLoading,
     isUpdatingAutoArchive,
@@ -29,12 +30,15 @@ export function useSenderCommands(
   } = senderActions;
   const senderCommandContext = useMemo(
     () =>
-      canManageAutoArchive
+      canManageSenderActions
         ? {
             emailAccountId,
+            canManageAutoArchive,
             isAutoArchived,
             isAutoArchiveDisabled:
-              isAutoArchiveStatusLoading || isUpdatingAutoArchive,
+              !canManageAutoArchive ||
+              isAutoArchiveStatusLoading ||
+              isUpdatingAutoArchive,
             isUnsubscribeDisabled,
             unsubscribeLabel,
             threadId: message?.threadId ?? "",
@@ -44,6 +48,7 @@ export function useSenderCommands(
         : null,
     [
       canManageAutoArchive,
+      canManageSenderActions,
       isUnsubscribeDisabled,
       unsubscribeLabel,
       emailAccountId,

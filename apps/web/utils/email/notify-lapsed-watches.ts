@@ -82,7 +82,7 @@ async function getRecentlyLapsedEmailAccounts() {
   return prisma.emailAccount.findMany({
     where: {
       ...getPremiumUserFilter(),
-      account: { disconnectedAt: null },
+      account: { disconnectedAt: null, provider: { not: "imap" } },
       watchEmailsExpirationDate: {
         gte: new Date(now - MAX_LAPSE_MS),
         lt: new Date(now - MIN_LAPSE_MS),

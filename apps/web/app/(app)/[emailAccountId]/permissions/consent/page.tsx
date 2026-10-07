@@ -16,6 +16,24 @@ export default function PermissionsConsentPage() {
   const [isReconnecting, setIsReconnecting] = useState(false);
   const isMicrosoft = provider === "microsoft";
 
+  if (provider === "imap") {
+    return (
+      <div className="mx-auto max-w-md p-8">
+        <PageHeading>Reconnect your Hostinger mailbox</PageHeading>
+        <TypographyP className="mt-4">
+          Hostinger uses your mailbox password, not Google or Microsoft
+          permissions.
+        </TypographyP>
+        <Button asChild className="mt-4">
+          <Link
+            href={`/accounts?reconnectEmailAccountId=${encodeURIComponent(emailAccountId)}`}
+          >
+            Update mailbox credentials
+          </Link>
+        </Button>
+      </div>
+    );
+  }
   const handleReconnect = async () => {
     setIsReconnecting(true);
 

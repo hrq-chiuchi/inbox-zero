@@ -4,6 +4,8 @@ import {
 } from "@/utils/email-account-client";
 import { GmailProvider } from "@/utils/email/google";
 import { OutlookProvider } from "@/utils/email/microsoft";
+import { ImapProvider } from "@/utils/email/imap";
+import { createImapMailbox } from "@/utils/imap/client";
 import type { EmailProvider } from "@/utils/email/types";
 import { assertProviderNotRateLimited } from "@/utils/email/rate-limit";
 import { toRateLimitProvider } from "@/utils/email/rate-limit-mode-error";
@@ -20,6 +22,9 @@ export async function createEmailProvider({
   provider: string;
   logger: Logger;
 }): Promise<EmailProvider> {
+  if (provider === "imap") {
+    return new ImapProvider(await createImapMailbox(emailAccountId));
+  }
   const rateLimitProvider = toRateLimitProvider(provider);
   if (!rateLimitProvider) throw new Error(`Unsupported provider: ${provider}`);
 

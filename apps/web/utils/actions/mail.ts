@@ -19,6 +19,7 @@ import {
 } from "@/utils/actions/mail.validation";
 import {
   isGoogleProvider,
+  isFolderProvider,
   isMicrosoftProvider,
 } from "@/utils/email/provider-types";
 import { isGmailLabelColor } from "@/utils/gmail/label-colors";
@@ -282,10 +283,11 @@ export const updateMailboxItemAction = actionClient
       }
       if (
         (labelListVisibility || messageListVisibility) &&
-        !isGoogleProvider(provider)
+        !isGoogleProvider(provider) &&
+        provider !== "imap"
       ) {
         throw new SafeError(
-          "Visibility settings are only available for Gmail.",
+          "Visibility settings are not supported by this email provider.",
         );
       }
       if (color && isGoogleProvider(provider) && !isGmailLabelColor(color)) {
@@ -503,9 +505,9 @@ function assertMailboxItemMutationSupported({
   kind: "label" | "folder";
   provider: string;
 }) {
-  if (kind === "folder" && !isMicrosoftProvider(provider)) {
+  if (kind === "folder" && !isFolderProvider(provider)) {
     throw new SafeError(
-      "Folder actions are only available for Outlook accounts.",
+      "Folder actions are not supported by this email provider.",
     );
   }
 }

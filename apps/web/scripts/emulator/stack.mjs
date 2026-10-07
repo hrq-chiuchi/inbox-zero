@@ -175,16 +175,17 @@ async function serveScheduledActions() {
     );
   }
   for (;;) {
-    try {
-      const response = await fetch(`${baseUrl}/api/cron/scheduled-actions`, {
-        headers: { authorization: `Bearer ${secret}` },
-      });
-      await response.arrayBuffer();
-      if (!response.ok) {
-        console.error(`scheduled-actions returned ${response.status}`);
+    for (const path of ["/api/cron/scheduled-actions", "/api/cron/imap-poll"]) {
+      try {
+        const response = await fetch(`${baseUrl}${path}`, {
+          headers: { authorization: `Bearer ${secret}` },
+          signal: AbortSignal.timeout(30_000),
+        });
+        await response.arrayBuffer();
+        if (!response.ok) console.error(`${path} returned ${response.status}`);
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : error);
       }
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : error);
     }
     await delay(3000);
   }

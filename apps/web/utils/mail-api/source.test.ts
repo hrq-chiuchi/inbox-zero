@@ -8,8 +8,18 @@ import { ProviderRateLimitModeError } from "@/utils/email/rate-limit-mode-error"
 import { syncPageSchema } from "@inboxzero/mail-core/sync";
 import { createEmailProviderMailboxSource } from "./source";
 import type { EmailProvider } from "@/utils/email/types";
+import {
+  ImapAuthenticationError,
+  ImapUidValidityChangedError,
+} from "@/utils/imap/client";
 
 vi.mock("server-only", () => ({}));
+vi.mock("@/utils/imap/client", () => ({
+  ImapAuthenticationError: class extends Error {},
+  ImapDisconnectedError: class extends Error {},
+  ImapMessageNotFoundError: class extends Error {},
+  ImapUidValidityChangedError: class extends Error {},
+}));
 
 describe("createEmailProviderMailboxSource", () => {
   it("continues provider search after the first page", async () => {
@@ -1120,6 +1130,182 @@ describe("createEmailProviderMailboxSource", () => {
     ).resolves.toEqual({
       status: "not_found",
     });
+  });
+
+  it("discovers native IMAP folder scopes and keeps changes bound to that folder", async () => {
+    const getMailboxSyncPage = vi.fn().mockResolvedValue({
+      cursor: "imap-snapshot",
+      reset: false,
+      upsertedMessages: [],
+      deletedMessageIds: [],
+      removedMessageIds: [],
+      hasMore: false,
+    });
+    const source = createEmailProviderMailboxSource({
+      accountId: "acc-1",
+      provider: {
+        name: "imap",
+        localMailSyncStrategy: "folder-delta",
+        getFolders: vi.fn().mockResolvedValue([
+          { id: "INBOX", childFolders: [] },
+          { id: "Projects/Cliente", childFolders: [] },
+        ]),
+        getMailboxSyncPage,
+      } as unknown as EmailProvider,
+    });
+    expect(
+      await source.discoverScopes({
+        session: { accountId: "acc-1", generation: "g1" },
+        requestId: "scopes",
+        page: null,
+        signal: new AbortController().signal,
+      }),
+    ).toMatchObject({
+      status: "ok",
+      value: {
+        scopes: [
+          { id: "INBOX", kind: "folder", folderId: "INBOX" },
+          {
+            id: "Projects/Cliente",
+            kind: "folder",
+            folderId: "Projects/Cliente",
+          },
+        ],
+      },
+    });
+    await source.readChanges({
+      session: { accountId: "acc-1", generation: "g1" },
+      requestId: "changes",
+      position: {
+        streamId: "Projects/Cliente",
+        generation: "g1",
+        checkpoint: "imap-snapshot",
+      },
+      pageSize: 100,
+      signal: new AbortController().signal,
+    });
+    expect(getMailboxSyncPage).toHaveBeenCalledWith({
+      folderId: "Projects/Cliente",
+      cursor: "imap-snapshot",
+      limit: 50,
+    });
+  });
+
+  it("never fabricates a Gmail history checkpoint when IMAP bootstrap setup fails", async () => {
+    const source = createEmailProviderMailboxSource({
+      accountId: "acc-1",
+      provider: {
+        name: "imap",
+        localMailSyncStrategy: "folder-delta",
+        getMailboxSyncPage: vi
+          .fn()
+          .mockRejectedValue(new Error("Socket timed out")),
+      } as unknown as EmailProvider,
+    });
+    expect(
+      await source.beginBootstrap({
+        session: { accountId: "acc-1", generation: "g1" },
+        requestId: "bootstrap",
+        scope: { id: "Archive", kind: "folder", folderId: "Archive" },
+        afterMs: null,
+        signal: new AbortController().signal,
+      }),
+    ).toMatchObject({ status: "paused", reason: "unavailable" });
+  });
+
+  it("resets the affected IMAP bootstrap scope when UIDVALIDITY changes mid-enumeration", async () => {
+    const source = createEmailProviderMailboxSource({
+      accountId: "acc-1",
+      provider: {
+        name: "imap",
+        localMailSyncStrategy: "folder-delta",
+        getMailboxSyncPage: vi
+          .fn()
+          .mockRejectedValue(new ImapUidValidityChangedError()),
+      } as unknown as EmailProvider,
+    });
+    expect(
+      await source.enumerate({
+        session: { accountId: "acc-1", generation: "g1" },
+        requestId: "enumeration",
+        bootstrapId: "mailbox",
+        page: JSON.stringify({ scopeId: "Archive", folderId: "Archive" }),
+        pageSize: 20,
+        signal: new AbortController().signal,
+      }),
+    ).toEqual({ status: "reset_required", scopeId: "Archive" });
+  });
+
+  it("enumerates native IMAP through date-scoped metadata snapshots without eager source downloads", async () => {
+    const getMailboxSyncPage = vi.fn().mockResolvedValue({
+      cursor: "next-snapshot",
+      reset: false,
+      hasMore: true,
+      upsertedMessages: [],
+      deletedMessageIds: [],
+    });
+    const getMessagesWithPagination = vi.fn();
+    const source = createEmailProviderMailboxSource({
+      accountId: "acc-1",
+      provider: {
+        name: "imap",
+        localMailSyncStrategy: "folder-delta",
+        getMailboxSyncPage,
+        getMessagesWithPagination,
+      } as unknown as EmailProvider,
+    });
+    const result = await source.enumerate({
+      session: { accountId: "acc-1", generation: "g1" },
+      requestId: "enumeration",
+      bootstrapId: "mailbox",
+      page: JSON.stringify({
+        scopeId: "Archive",
+        folderId: "Archive",
+        afterMs: 1_790_812_800_000,
+        pageToken: "current-snapshot",
+      }),
+      pageSize: 100,
+      signal: new AbortController().signal,
+    });
+    expect(getMailboxSyncPage).toHaveBeenCalledWith({
+      after: new Date(1_790_812_800_000),
+      folderId: "Archive",
+      cursor: "current-snapshot",
+      limit: 50,
+    });
+    expect(getMessagesWithPagination).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ status: "ok", value: { changes: [] } });
+    if (result.status !== "ok") throw new Error("Expected continuation");
+    expect(JSON.parse(result.value.nextPage!)).toMatchObject({
+      pageToken: "next-snapshot",
+      afterMs: 1_790_812_800_000,
+    });
+  });
+
+  it("reports IMAP authentication failure as blocked authentication, not unavailable polling", async () => {
+    const source = createEmailProviderMailboxSource({
+      accountId: "acc-1",
+      provider: {
+        name: "imap",
+        localMailSyncStrategy: "folder-delta",
+        getMailboxSyncPage: vi
+          .fn()
+          .mockRejectedValue(new ImapAuthenticationError()),
+      } as unknown as EmailProvider,
+    });
+    expect(
+      await source.readChanges({
+        session: { accountId: "acc-1", generation: "g1" },
+        requestId: "changes",
+        position: {
+          streamId: "INBOX",
+          generation: "g1",
+          checkpoint: "imap-snapshot",
+        },
+        pageSize: 20,
+        signal: new AbortController().signal,
+      }),
+    ).toEqual({ status: "blocked_auth" });
   });
 });
 

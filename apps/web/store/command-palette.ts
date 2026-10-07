@@ -38,6 +38,7 @@ export type MailCommandContext = {
 
 export type SenderCommandContext = {
   emailAccountId: string;
+  canManageAutoArchive: boolean;
   isAutoArchived: boolean;
   isAutoArchiveDisabled: boolean;
   isUnsubscribeDisabled: boolean;

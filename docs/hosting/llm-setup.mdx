@@ -136,7 +136,7 @@ Codex example:
 
 ```bash
 cd apps/web
-pnpm add ai-sdk-provider-codex-cli@1.1.0
+pnpm add ai-sdk-provider-codex-cli@2.2.1
 pnpm add -g @openai/codex
 codex login
 ```
@@ -146,6 +146,17 @@ CLI_LLM_ENABLED=true
 DEFAULT_LLMS=codex-cli:gpt-5.3-codex
 CODEX_CLI_ALLOW_NPX=false
 ```
+
+Model availability depends on the CLI's authenticated account, not just the model name accepted by an API provider. Query Codex app-server's `model/list` before setting model IDs, and check every configured role: `DEFAULT_LLMS`, `CHAT_LLMS`, `DRAFT_LLMS`, `ECONOMY_LLMS`, and `NANO_LLMS`. A valid login does not guarantee access to a particular model or remaining subscription usage.
+
+For container deployments, the web process must be able to import the provider package from `apps/web`; installing it beside a CLI under a separate prefix is insufficient. Verify `import('ai-sdk-provider-codex-cli')` from `/app/apps/web` in the final image. Preserve the authenticated Codex home across container recreations.
+
+The Codex provider can resolve its own bundled `@openai/codex` before the executable on `PATH`. When using a separately installed CLI, set `CODEX_CLI_PATH` to its absolute executable path so model discovery and application requests use the same version. Verify generation through the provider, not only by invoking `codex` directly.
+
+Tool-bearing Codex requests use an account-scoped, authenticated loopback MCP server and Codex app-server; text-only requests use `codex exec`. Install a provider version exposing `createCodexAppServer` and `createLocalMcpServer` (AI SDK v7 requires the 2.x provider line). Application tool schemas and executors are preserved, including sensitive-data filtering. Only tool-call approvals for this local MCP server are accepted; unrelated elicitations and sandbox escalation remain denied. The MCP server and Codex process are closed on completion, failure, or stream cancellation.
+
+After changing environment-based model settings, recreate the web container and verify a real generation. If Codex reports a usage limit, wait for the reported reset or explicitly choose another funded provider; changing to another model does not establish that the limit is resolved.
+
 
 Claude Code example:
 

@@ -15,6 +15,10 @@ await esbuild.build({
   outfile: "dist/main.js",
   format: "esm",
   define: {
+    "process.env.INBOX_ZERO_DEFAULT_APP_URL": process.env
+      .INBOX_ZERO_DEFAULT_APP_URL
+      ? JSON.stringify(process.env.INBOX_ZERO_DEFAULT_APP_URL)
+      : "undefined",
     "process.env.INBOX_ZERO_SENTRY_DSN": JSON.stringify(
       process.env.INBOX_ZERO_SENTRY_DSN ?? "",
     ),

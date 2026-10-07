@@ -47,15 +47,17 @@ COPY scripts/pnpm-install-without-desktop.sh scripts/pnpm-install-without-deskto
 # peer dependency boundaries. Skip @inboxzero/desktop so the image does not
 # download Electron.
 RUN chmod +x scripts/pnpm-install-without-desktop.sh \
- && ./scripts/pnpm-install-without-desktop.sh --frozen-lockfile --prefer-offline --config.node-linker=hoisted
+ && ./scripts/pnpm-install-without-desktop.sh --frozen-lockfile --prefer-offline --config.node-linker=hoisted --config.enable-global-virtual-store=false
 
  # Copy the full repo
 COPY . .
 
  # Build app (Next.js standalone)
 ENV NODE_ENV=production
-# Increase V8 heap for the production build.
-ENV NODE_OPTIONS=--max_old_space_size=8192
+# Allow smaller builders to bound V8 without changing the default image build.
+ARG NODE_BUILD_HEAP_MB=8192
+ARG NEXT_BUILD_BUNDLER=turbopack
+ENV NODE_OPTIONS=--max_old_space_size=${NODE_BUILD_HEAP_MB}
 # Typechecking is covered by the Build Check workflow. Skipping it here
 # keeps peak RAM down so Depot workers do not OOM during next build.
 ENV SKIP_TYPE_CHECK=true
@@ -111,11 +113,12 @@ RUN rm -f /app/apps/web/.env && touch /app/apps/web/.env
 RUN npx prisma generate --schema=apps/web/prisma/schema.prisma
 
 RUN cd /app/apps/web \
- && pnpm exec next build \
- && pnpm exec serwist build serwist.config.mjs \
- && cd /app \
- && pnpm --filter inbox-zero-ai deploy --legacy --prod /tmp/apps/web \
- && pnpm --filter @inboxzero/worker deploy --legacy --prod /tmp/apps/worker \
+ && pnpm --config.verify-deps-before-run=false --config.node-linker=hoisted --config.enable-global-virtual-store=false exec next build --${NEXT_BUILD_BUNDLER} \
+ && pnpm --config.verify-deps-before-run=false --config.node-linker=hoisted --config.enable-global-virtual-store=false exec serwist build serwist.config.mjs
+
+# The BullMQ-only worker has none of the web/desktop patched dependencies.
+RUN pnpm --config.verify-deps-before-run=false --config.node-linker=hoisted --config.enable-global-virtual-store=false --filter inbox-zero-ai deploy --legacy --prod /tmp/apps/web \
+ && pnpm --config.verify-deps-before-run=false --config.node-linker=hoisted --config.enable-global-virtual-store=false --config.allow-unused-patches=true --filter @inboxzero/worker deploy --legacy --prod /tmp/apps/worker \
  && rm -rf apps/web/.next/cache
 
 RUN rm -f /app/apps/web/.env /app/apps/web/.next/standalone/apps/web/.env

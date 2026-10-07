@@ -1,5 +1,9 @@
 import { app, dialog, Notification } from "electron";
-import type { AppUpdater, UpdateInfo } from "electron-updater";
+import {
+  autoUpdater,
+  type AppUpdater,
+  type UpdateInfo,
+} from "electron-updater";
 import { captureDesktopError } from "./sentry";
 import { isTransientNetworkError } from "./network-errors";
 import { getDesktopUpdateFeedUrl } from "./update-feed";
@@ -42,10 +46,10 @@ export async function startDesktopAutoUpdate(
     onDownloadProgress?: (percent: number | null) => void;
   },
 ): Promise<boolean> {
-  if (!isPackaged) return false;
+  if (!isPackaged || process.env.INBOX_ZERO_DEFAULT_APP_URL) return false;
 
   try {
-    const autoUpdater = await getDesktopAutoUpdater(handlers);
+    const autoUpdater = getDesktopAutoUpdater(handlers);
     scheduleDesktopUpdateChecks(autoUpdater);
     observeDownload(await autoUpdater.checkForUpdates());
     return true;
@@ -60,7 +64,7 @@ export async function installDownloadedDesktopUpdate(
 ): Promise<boolean> {
   if (!downloadedVersion) return false;
 
-  const autoUpdater = await getDesktopAutoUpdater();
+  const autoUpdater = getDesktopAutoUpdater();
   prepareToQuit();
   autoUpdater.quitAndInstall(true, true);
   return true;
@@ -78,9 +82,18 @@ export async function checkForDesktopUpdatesManually(
     });
     return false;
   }
+  if (process.env.INBOX_ZERO_DEFAULT_APP_URL) {
+    await dialog.showMessageBox({
+      type: "info",
+      message: "Updates are managed by your Inbox Zero administrator",
+      detail:
+        "Install the latest desktop build published by your self-hosted instance.",
+    });
+    return false;
+  }
 
   try {
-    const autoUpdater = await getDesktopAutoUpdater();
+    const autoUpdater = getDesktopAutoUpdater();
     if (downloadedVersion) {
       return promptToInstallDownloadedUpdate(prepareToQuit, autoUpdater);
     }
@@ -124,16 +137,15 @@ export async function checkForDesktopUpdatesManually(
   }
 }
 
-async function getDesktopAutoUpdater(handlers?: {
+function getDesktopAutoUpdater(handlers?: {
   onUpdateReady?: (version: string) => void;
   onDownloadProgress?: (percent: number | null) => void;
-}): Promise<AppUpdater> {
+}): AppUpdater {
   if (handlers?.onUpdateReady) onUpdateReady = handlers.onUpdateReady;
   if (handlers?.onDownloadProgress) {
     onDownloadProgress = handlers.onDownloadProgress;
   }
 
-  const { autoUpdater } = await import("electron-updater");
   autoUpdater.setFeedURL({
     provider: "generic",
     url: getDesktopUpdateFeedUrl(),

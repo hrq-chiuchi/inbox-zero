@@ -43,6 +43,7 @@ import { extractDomainFromEmail } from "@/utils/email";
 import type { NewsletterStatsResponse } from "@/app/api/user/stats/newsletters/route";
 import { NewsletterStatus } from "@/generated/prisma/enums";
 import type { NewsletterFilterType } from "@/app/(app)/[emailAccountId]/bulk-unsubscribe/types";
+import { isImapProvider } from "@/utils/email/provider-types";
 
 type Newsletter = NewsletterStatsResponse["newsletters"][number];
 
@@ -118,7 +119,8 @@ export function BulkActions({
   const posthog = usePostHog();
   const { hasUnsubscribeAccess, mutate: refetchPremium } = usePremium();
   const { PremiumModal, openModal } = usePremiumModal();
-  const { emailAccountId } = useAccount();
+  const { emailAccountId, provider } = useAccount();
+  const supportsSenderFilters = !isImapProvider(provider);
   const onBulkUnsubscribeSuccess = useCallback((items: Newsletter[]) => {
     if (items.length === 0) return;
     setCelebration({
@@ -195,7 +197,12 @@ export function BulkActions({
   const allSelectedCanUnsubscribe =
     selectedNewsletters.length > 0 &&
     selectedNewsletters.every(
-      (n) => n.status !== NewsletterStatus.UNSUBSCRIBED,
+      (n) =>
+        n.status !== NewsletterStatus.UNSUBSCRIBED &&
+        (supportsSenderFilters ||
+          Boolean(
+            getHttpUnsubscribeLink({ unsubscribeLink: n.unsubscribeLink }),
+          )),
     );
 
   const hasUnsubscribeLinks = selectedNewsletters.some((n) =>
@@ -254,11 +261,13 @@ export function BulkActions({
                       onClick={() => onBulkUnsubscribe(selectedNewsletters)}
                     />
                   )}
-                  <ActionButton
-                    icon={ArchiveRestoreIcon}
-                    label="Auto Archive"
-                    onClick={() => setAutoArchiveDialogOpen(true)}
-                  />
+                  {supportsSenderFilters && (
+                    <ActionButton
+                      icon={ArchiveRestoreIcon}
+                      label="Auto Archive"
+                      onClick={() => setAutoArchiveDialogOpen(true)}
+                    />
+                  )}
                   <ActionButton
                     icon={
                       allSelectedAreApproved ? ThumbsDownIcon : ThumbsUpIcon
@@ -286,6 +295,12 @@ export function BulkActions({
                 </div>
               </div>
             </PremiumTooltip>
+            {!supportsSenderFilters && (
+              <p className="mt-2 text-sm text-muted-foreground">
+                Hostinger does not support automatic archive or sender blocking.
+                Use unsubscribe links or archive existing emails.
+              </p>
+            )}
           </motion.div>
         )}
       </AnimatePresence>
@@ -420,7 +435,7 @@ export function BulkActions({
 
       {/* Auto Archive Confirmation Dialog */}
       <Dialog
-        open={autoArchiveDialogOpen}
+        open={supportsSenderFilters && autoArchiveDialogOpen}
         onOpenChange={setAutoArchiveDialogOpen}
       >
         <DialogContent>

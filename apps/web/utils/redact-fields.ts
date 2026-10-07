@@ -18,6 +18,8 @@ export const REDACTED_FIELD_NAMES = new Set([
   "refresh_token",
   "idToken",
   "id_token",
+  "password",
+  "pass",
   "headers",
   "set-cookie",
   "authorization",

@@ -22,6 +22,14 @@ export function PermissionsCheck() {
     permissionsChecked[emailAccountId] = true;
 
     checkPermissionsAction(emailAccountId).then((result) => {
+      if (result?.data && "hasMailboxCredentials" in result.data) {
+        if (!result.data.hasMailboxCredentials) {
+          router.replace(
+            `/accounts?reconnectEmailAccountId=${encodeURIComponent(emailAccountId)}`,
+          );
+        }
+        return;
+      }
       if (
         result?.data?.hasAllPermissions === false ||
         result?.data?.hasRefreshToken === false

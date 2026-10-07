@@ -1,6 +1,7 @@
 import { withThreadPageBufferDeletion } from "@/utils/redis/thread-page-buffer";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Prisma } from "@/generated/prisma/client";
+import type { EmailAccount } from "@/generated/prisma/client";
 import prisma from "@/utils/__mocks__/prisma";
 import { updateAccountSeats } from "@/utils/premium/seats";
 import { aliasPosthogUser } from "@/utils/posthog";
@@ -578,6 +579,45 @@ describe("deleteEmailAccountAction", () => {
       "Transfer organization ownership before deleting this email account.",
     );
     expect(updateAccountSeats).not.toHaveBeenCalled();
+  });
+
+  it("removes a disconnected IMAP mailbox without treating its email as a sign-in identity", async () => {
+    prisma.emailAccount.findUnique.mockResolvedValue({
+      email: "primary@example.com",
+      accountId: "imap-provider-1",
+      account: { provider: "imap", disconnectedAt: new Date() },
+      user: { email: "primary@example.com" },
+    } as EmailAccount);
+
+    const result = await deleteEmailAccountAction({
+      emailAccountId: "imap-mailbox-1",
+    });
+
+    expect(result?.serverError).toBeUndefined();
+    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(aliasPosthogUser).not.toHaveBeenCalled();
+    expect(prisma.account.delete).toHaveBeenCalledWith({
+      where: { id: "imap-provider-1", userId: "user-1" },
+    });
+  });
+
+  it("never promotes an IMAP mailbox to the user's primary sign-in identity", async () => {
+    prisma.emailAccount.findMany.mockResolvedValue([]);
+
+    const result = await deleteEmailAccountAction({
+      emailAccountId: "primary-email-account",
+    });
+
+    expect(result?.serverError).toBeDefined();
+    expect(prisma.emailAccount.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          account: { provider: { not: "imap" } },
+        }),
+      }),
+    );
+    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(prisma.emailAccount.delete).not.toHaveBeenCalled();
   });
 });
 

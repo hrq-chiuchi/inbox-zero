@@ -18,6 +18,8 @@ __pycache__
 **/.turbo
 out
 coverage
+apps/desktop/dist
+apps/desktop/release
 *.log
 
 # OS/editor junk

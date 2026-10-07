@@ -36,6 +36,8 @@ import {
 import { useProductAnalytics } from "@/hooks/useProductAnalytics";
 import { fetchAllSenderThreads } from "@/store/fetch-sender-threads";
 import { enqueueThreadMailMutationBatch } from "@/utils/mail-engine/thread-mail-mutations";
+import { useAccount } from "@/providers/EmailAccountProvider";
+import { isImapProvider } from "@/utils/email/provider-types";
 
 // Shared type for SWR mutate function
 type MutateFn = (
@@ -301,6 +303,8 @@ export function useUnsubscribe<T extends Row>({
   refetchPremium: () => Promise<UserResponse | null | undefined>;
 }) {
   const analytics = useProductAnalytics("bulk_unsubscribe");
+  const { provider } = useAccount();
+  const supportsSenderFilters = !isImapProvider(provider);
   const [unsubscribeLoading, setUnsubscribeLoading] = useState(false);
   const { queueArchiveSenders } = useArchiveSenderQueueActions(emailAccountId);
   const automaticUnsubscribeLink = getAutomaticUnsubscribeLink(
@@ -346,6 +350,12 @@ export function useUnsubscribe<T extends Row>({
         await mutate();
       } else {
         if (!userFacingUnsubscribeLink) {
+          if (!supportsSenderFilters) {
+            toast.error(
+              "This sender has no unsubscribe link. Hostinger does not support sender blocking. You can still archive existing emails.",
+            );
+            return;
+          }
           await blockSender({
             sender: item.name,
             emailAccountId,
@@ -399,6 +409,7 @@ export function useUnsubscribe<T extends Row>({
     }
   }, [
     hasUnsubscribeAccess,
+    supportsSenderFilters,
     item.name,
     item.status,
     item.unsubscribeLink,
@@ -413,6 +424,7 @@ export function useUnsubscribe<T extends Row>({
   ]);
 
   return {
+    canBlockSender: supportsSenderFilters,
     unsubscribeLoading,
     onUnsubscribe,
     // Only meaningful without an automatic link: the caller navigates to it
@@ -447,11 +459,27 @@ export function useBulkUnsubscribe<T extends Row>({
   onSuccess?: (items: T[]) => void;
 }) {
   const analytics = useProductAnalytics("bulk_unsubscribe");
+  const { provider } = useAccount();
+  const supportsSenderFilters = !isImapProvider(provider);
   const { queueArchiveSenders } = useArchiveSenderQueueActions(emailAccountId);
 
   const onBulkUnsubscribe = useCallback(
     async (items: T[]) => {
       if (!hasUnsubscribeAccess) {
+        return {
+          stoppedByRateLimit: false,
+          total: items.length,
+          successCount: 0,
+          failureCount: items.length,
+        };
+      }
+      if (
+        !supportsSenderFilters &&
+        items.some((item) => !getAutomaticUnsubscribeLink(item.unsubscribeLink))
+      ) {
+        toast.error(
+          "Select senders with unsubscribe links. Hostinger does not support sender blocking; open manual unsubscribe links individually.",
+        );
         return {
           stoppedByRateLimit: false,
           total: items.length,
@@ -519,6 +547,7 @@ export function useBulkUnsubscribe<T extends Row>({
     },
     [
       hasUnsubscribeAccess,
+      supportsSenderFilters,
       mutate,
       posthog,
       refetchPremium,
@@ -578,11 +607,13 @@ export function useAutoArchive<T extends Row>({
   refetchPremium: () => Promise<UserResponse | null | undefined>;
   emailAccountId: string;
 }) {
+  const { provider } = useAccount();
+  const supportsSenderFilters = !isImapProvider(provider);
   const [autoArchiveLoading, setAutoArchiveLoading] = useState(false);
   const { queueArchiveSenders } = useArchiveSenderQueueActions(emailAccountId);
 
   const onAutoArchiveClick = useCallback(async () => {
-    if (!hasUnsubscribeAccess) return;
+    if (!hasUnsubscribeAccess || !supportsSenderFilters) return;
 
     setAutoArchiveLoading(true);
 
@@ -609,12 +640,14 @@ export function useAutoArchive<T extends Row>({
     mutate,
     refetchPremium,
     hasUnsubscribeAccess,
+    supportsSenderFilters,
     posthog,
     emailAccountId,
     queueArchiveSenders,
   ]);
 
   const onDisableAutoArchive = useCallback(async () => {
+    if (!supportsSenderFilters) return;
     setAutoArchiveLoading(true);
 
     try {
@@ -631,11 +664,11 @@ export function useAutoArchive<T extends Row>({
     } finally {
       setAutoArchiveLoading(false);
     }
-  }, [item.name, mutate, emailAccountId]);
+  }, [item.name, mutate, emailAccountId, supportsSenderFilters]);
 
   const onAutoArchiveAndLabel = useCallback(
     async (labelId: string, labelName: string) => {
-      if (!hasUnsubscribeAccess) return;
+      if (!hasUnsubscribeAccess || !supportsSenderFilters) return;
 
       setAutoArchiveLoading(true);
 
@@ -661,6 +694,7 @@ export function useAutoArchive<T extends Row>({
       mutate,
       refetchPremium,
       hasUnsubscribeAccess,
+      supportsSenderFilters,
       emailAccountId,
       queueArchiveSenders,
     ],
@@ -689,11 +723,13 @@ export function useBulkAutoArchive<T extends Row>({
   onDeselectItem?: (id: string) => void;
   filter: NewsletterFilterType;
 }) {
+  const { provider } = useAccount();
+  const supportsSenderFilters = !isImapProvider(provider);
   const { queueArchiveSenders } = useArchiveSenderQueueActions(emailAccountId);
 
   const onBulkAutoArchive = useCallback(
     async (items: T[]) => {
-      if (!hasUnsubscribeAccess) return;
+      if (!hasUnsubscribeAccess || !supportsSenderFilters) return;
 
       await executeBulkOperation({
         items,
@@ -716,6 +752,7 @@ export function useBulkAutoArchive<T extends Row>({
     },
     [
       hasUnsubscribeAccess,
+      supportsSenderFilters,
       mutate,
       refetchPremium,
       emailAccountId,
@@ -1049,6 +1086,8 @@ export function useBulkUnsubscribeShortcuts<T extends Row>({
   emailAccountId: string;
   userEmail: string;
 }) {
+  const { provider } = useAccount();
+  const supportsSenderFilters = !isImapProvider(provider);
   const { queueArchiveSenders } = useArchiveSenderQueueActions(emailAccountId);
 
   // perform actions using keyboard shortcuts
@@ -1084,6 +1123,12 @@ export function useBulkUnsubscribeShortcuts<T extends Row>({
         if (e.key === "e") {
           // auto archive
           e.preventDefault();
+          if (!supportsSenderFilters) {
+            toast.error(
+              "Hostinger does not support automatic archive filters.",
+            );
+            return;
+          }
           const statusResult = await setSenderStatusAction(emailAccountId, {
             senderEmail: item.name,
             status: NewsletterStatus.AUTO_ARCHIVED,
@@ -1106,6 +1151,12 @@ export function useBulkUnsubscribeShortcuts<T extends Row>({
           );
 
           if (!userFacingUnsubscribeLink) {
+            if (!supportsSenderFilters) {
+              toast.error(
+                "This sender has no unsubscribe link. Hostinger does not support sender blocking. You can still archive existing emails.",
+              );
+              return;
+            }
             await blockSender({
               sender: item.name,
               emailAccountId,
@@ -1161,6 +1212,7 @@ export function useBulkUnsubscribeShortcuts<T extends Row>({
     newsletters,
     selectedRow,
     hasUnsubscribeAccess,
+    supportsSenderFilters,
     refetchPremium,
     setSelectedRow,
     onOpenNewsletter,

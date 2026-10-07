@@ -54,6 +54,7 @@ import { getAppleClientSecret } from "@/utils/auth/apple-client-secret";
 import { reconcileMicrosoftAccountSubject } from "@/utils/auth/microsoft-account-subject";
 import { getScimOptions, assertScimUserActive } from "@/utils/auth/scim";
 import prisma from "@/utils/prisma";
+import { authOnlyPrisma } from "@/utils/auth/mailbox-isolation";
 import {
   getAuthProviderFromContext,
   isNewUserAuthContext,
@@ -257,7 +258,7 @@ export const betterAuthConfig = betterAuth({
   emailAndPassword: {
     enabled: false,
   },
-  database: prismaAdapter(prisma, {
+  database: prismaAdapter(authOnlyPrisma, {
     provider: "postgresql",
     transaction: true,
   }),
@@ -897,7 +898,7 @@ export const auth = async (
   }
 };
 
-async function autoJoinOrganization(emailAccountId: string) {
+export async function autoJoinOrganization(emailAccountId: string) {
   const orgs = await prisma.organization.findMany({
     select: { id: true },
     take: 2,

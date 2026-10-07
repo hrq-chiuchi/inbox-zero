@@ -29,14 +29,32 @@ export async function redirectToEmailAccountPath(
     });
     redirect(buildLoginRedirectUrl(buildRedirectUrl(path, searchParams)));
   }
+  const requestedEmail = searchParams?.accountEmail;
+  if (
+    requestedEmail !== undefined &&
+    (typeof requestedEmail !== "string" || requestedEmail.length > 320)
+  ) {
+    redirect("/accounts");
+  }
 
-  const lastEmailAccountId = await measureRedirectStep(
-    timing,
-    "last-email-account-cookie",
-    () => getLastEmailAccountFromCookie(userId),
-  );
+  const lastEmailAccountId = requestedEmail
+    ? null
+    : await measureRedirectStep(timing, "last-email-account-cookie", () =>
+        getLastEmailAccountFromCookie(userId),
+      );
 
   let emailAccountId = lastEmailAccountId;
+  if (requestedEmail) {
+    const account = await prisma.emailAccount.findFirst({
+      where: {
+        userId,
+        email: { equals: requestedEmail, mode: "insensitive" },
+      },
+      select: { id: true },
+    });
+    if (!account) redirect("/accounts");
+    emailAccountId = account.id;
+  }
 
   // If no last account is available, fall back to the first account.
   if (!emailAccountId) {

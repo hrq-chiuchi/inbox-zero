@@ -1,9 +1,10 @@
 import type { MailClient, WorkAdmission } from "@inboxzero/mail-core/engine";
+import type { Provider } from "@inboxzero/mail-core/identities";
 import type { QuerySnapshot } from "@inboxzero/mail-core/queries";
 
 export type BrowserEngineStart = {
   accountId: string;
-  provider: "google" | "microsoft";
+  provider: Provider;
   generation?: string;
   persist?: boolean;
   maxPendingOperations?: number;

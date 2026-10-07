@@ -4,6 +4,7 @@ import {
   type MailEngine,
   type WorkAdmission,
 } from "@inboxzero/mail-core/engine";
+import type { Provider } from "@inboxzero/mail-core/identities";
 import { createSqliteMailStore } from "@inboxzero/mail-sqlite/store";
 import type {
   MailboxView,
@@ -31,7 +32,7 @@ export { browserMailEngineCapabilities };
 export type BrowserMailEngine = MailEngine & {
   ensureAccount(input: {
     accountId: string;
-    provider: "google" | "microsoft";
+    provider: Provider;
     generation?: string;
   }): Promise<void>;
 };

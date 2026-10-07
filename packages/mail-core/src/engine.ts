@@ -696,6 +696,16 @@ export function createMailEngine(input: {
           errorCode: paused ? enumerated.reason : "blocked_auth",
         });
       }
+      if (enumerated.status === "reset_required") {
+        await store.discardBootstrapScan({
+          session: input.session,
+          scopeId: scan.scopeId,
+          bootstrapId: scan.bootstrapId,
+        });
+        // Preserve confirmed mail and the old checkpoint. The next catch-up
+        // starts a new snapshot instead of retrying this expired enumeration.
+        break;
+      }
       if (enumerated.status !== "ok") {
         await noteConnection(input.session.accountId, enumerated.status);
         break;

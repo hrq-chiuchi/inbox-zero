@@ -73,7 +73,10 @@ async function getEmailAccounts({ userId }: { userId: string }) {
 
   const accountsWithNames = accountsWithRateLimits.map((account) => {
     // Old accounts don't have a name attached, so use the name from the user
-    if (account.user.email === account.email) {
+    if (
+      account.account.provider !== "imap" &&
+      account.user.email === account.email
+    ) {
       return {
         ...account,
         name: account.name || account.user.name,

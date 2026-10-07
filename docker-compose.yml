@@ -82,6 +82,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-inboxzero}?schema=public}
       DIRECT_URL: ${DIRECT_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-inboxzero}?schema=public}
       REDIS_HTTP_URL: ${REDIS_HTTP_URL:-${UPSTASH_REDIS_URL:-http://serverless-redis-http:80}}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       INTERNAL_API_URL: ${INTERNAL_API_URL:-http://web:3000}
     restart: always
 
@@ -116,6 +117,13 @@ services:
             echo \"[cron] Processing scheduled actions...\"
             curl -s -X GET 'http://web:3000/api/cron/scheduled-actions' -H \"Authorization: Bearer $${CRON_SECRET}\" || echo \"[cron] Warning: scheduled-actions request failed\"
             sleep 900
+          done
+        ) &
+        (
+          while true; do
+            echo \"[cron] Polling native IMAP inboxes...\"
+            curl --fail --max-time 300 -s -X GET 'http://web:3000/api/cron/imap-poll' -H \"Authorization: Bearer $${CRON_SECRET}\" || echo \"[cron] Warning: imap-poll request failed\"
+            sleep 60
           done
         ) &
         (

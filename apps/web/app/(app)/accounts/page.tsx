@@ -28,6 +28,7 @@ import { toastSuccess, toastError } from "@/components/Toast";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { prefixPath } from "@/utils/path";
 import { AddAccount } from "@/app/(app)/accounts/AddAccount";
+import { HostingerAccountForm } from "@/app/(app)/accounts/HostingerAccountForm";
 import { PageHeader } from "@/components/PageHeader";
 import { PageWrapper } from "@/components/PageWrapper";
 import { logOut } from "@/utils/user";
@@ -45,6 +46,13 @@ import { clearOfflineMailCacheForAccount } from "@/utils/offline/clear-mail-cach
 export default function AccountsPage() {
   const { data, isLoading, error, mutate } = useAccounts();
   const notification = useAccountNotifications();
+  const searchParams = useSearchParams();
+  const reconnectEmailAccountId = searchParams.get("reconnectEmailAccountId");
+  const reconnectAccount = data?.emailAccounts.find(
+    (account) =>
+      account.id === reconnectEmailAccountId &&
+      account.account.provider === "imap",
+  );
 
   return (
     <PageWrapper>
@@ -58,6 +66,14 @@ export default function AccountsPage() {
       ) : null}
 
       <LoadingContent loading={isLoading} error={error}>
+        {reconnectAccount && (
+          <div className="my-6 max-w-md rounded-md border p-4">
+            <HostingerAccountForm
+              key={reconnectAccount.id}
+              account={reconnectAccount}
+            />
+          </div>
+        )}
         <div className="grid grid-cols-1 gap-4 py-6 lg:grid-cols-2 xl:grid-cols-3">
           {data?.emailAccounts.map((emailAccount) => (
             <AccountItem
@@ -83,6 +99,7 @@ function AccountItem({
     email: string;
     image: string | null;
     isPrimary: boolean;
+    account: { provider: string };
   };
   onAccountDeleted: () => void;
 }) {
@@ -108,6 +125,7 @@ function AccountHeader({
     email: string;
     image: string | null;
     isPrimary: boolean;
+    account: { provider: string };
   };
   onAccountDeleted: () => void;
 }) {
@@ -120,8 +138,20 @@ function AccountHeader({
         </AvatarFallback>
       </Avatar>
       <div className="flex flex-col space-y-1.5 flex-1">
-        <CardTitle>{emailAccount.name}</CardTitle>
-        <CardDescription>{emailAccount.email}</CardDescription>
+        <CardTitle>
+          {emailAccount.name ||
+            (emailAccount.account.provider === "imap"
+              ? "Hostinger"
+              : emailAccount.email)}
+        </CardTitle>
+        <CardDescription className="break-all">
+          {emailAccount.email}
+        </CardDescription>
+        {emailAccount.account.provider === "imap" && (
+          <span className="text-xs text-muted-foreground">
+            Hostinger · IMAP
+          </span>
+        )}
       </div>
       <div
         onClick={(e: MouseEvent<HTMLDivElement>) => e.stopPropagation()}
@@ -149,6 +179,7 @@ function AccountOptionsDropdown({
     id: string;
     email: string;
     isPrimary: boolean;
+    account: { provider: string };
   };
   onAccountDeleted: () => void;
 }) {
@@ -204,6 +235,19 @@ function AccountOptionsDropdown({
             Setup
           </Link>
         </DropdownMenuItem>
+        {emailAccount.account.provider === "imap" && (
+          <DropdownMenuItem asChild>
+            <Link
+              href={`/accounts?reconnectEmailAccountId=${emailAccount.id}`}
+              onClick={(e: MouseEvent<HTMLAnchorElement>) =>
+                e.stopPropagation()
+              }
+            >
+              <Settings className="mr-2 size-4" />
+              Reconnect Hostinger
+            </Link>
+          </DropdownMenuItem>
+        )}
         <ConfirmDialog
           trigger={
             <DropdownMenuItem

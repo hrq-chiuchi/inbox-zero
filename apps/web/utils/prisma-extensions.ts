@@ -14,6 +14,7 @@ import { decryptToken, encryptToken } from "@/utils/encryption";
  */
 const ENCRYPTED_FIELDS = {
   account: ["access_token", "refresh_token"],
+  imapConnection: ["password"],
   calendarConnection: ["accessToken", "refreshToken"],
   driveConnection: ["accessToken", "refreshToken"],
   messagingChannel: ["accessToken", "refreshToken"],
@@ -44,6 +45,13 @@ function buildResult(spec: FieldSpec) {
       modelResult[field] = {
         needs: { [field]: true },
         compute(row: Record<string, string | null>) {
+          if (
+            model === "imapConnection" &&
+            field === "password" &&
+            !/^v\d+:[0-9a-f]+$/i.test(row[field] ?? "")
+          ) {
+            throw new Error("Stored mailbox credentials are not encrypted.");
+          }
           return decryptToken(row[field]);
         },
       };

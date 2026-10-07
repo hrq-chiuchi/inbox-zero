@@ -21,6 +21,12 @@ import { extractErrorInfo as extractOutlookErrorInfo } from "@/utils/outlook/ret
 import type { ParsedMessage } from "@/utils/types";
 import { mapWithConcurrency } from "@/utils/async";
 import { convertEmailHtmlToText } from "@/utils/mail";
+import {
+  ImapAuthenticationError,
+  ImapDisconnectedError,
+  ImapMessageNotFoundError,
+  ImapUidValidityChangedError,
+} from "@/utils/imap/client";
 
 const SUPPORTED_CHANGES = [
   "archive",
@@ -70,7 +76,7 @@ export function createEmailProviderMailboxSource(input: {
       };
     },
     async discoverScopes() {
-      if (provider.name === "microsoft") {
+      if (provider.localMailSyncStrategy === "folder-delta") {
         const folders = await provider.getFolders();
         return {
           status: "ok",
@@ -119,14 +125,31 @@ export function createEmailProviderMailboxSource(input: {
       }
     },
     async enumerate({ page, session, pageSize }) {
+      let scopeId = "primary";
       try {
         const token = JSON.parse(page) as BootstrapToken;
-        const syncPage = await provider.getMessagesWithPagination({
-          maxResults: Math.min(pageSize, maxPageSize),
-          folderId: token.folderId ?? undefined,
-          pageToken: token.pageToken,
-          includeDrafts: true,
-        });
+        scopeId = token.scopeId ?? "primary";
+        let syncPage: { messages: ParsedMessage[]; nextPageToken?: string };
+        if (provider.name === "imap") {
+          const snapshot = await provider.getMailboxSyncPage({
+            after: new Date(token.afterMs ?? 0),
+            cursor: token.pageToken,
+            folderId: token.folderId ?? undefined,
+            limit: Math.min(pageSize, maxPageSize),
+          });
+          if (snapshot.reset) return { status: "reset_required", scopeId };
+          syncPage = {
+            messages: snapshot.upsertedMessages,
+            nextPageToken: snapshot.hasMore ? snapshot.cursor : undefined,
+          };
+        } else {
+          syncPage = await provider.getMessagesWithPagination({
+            maxResults: Math.min(pageSize, maxPageSize),
+            folderId: token.folderId ?? undefined,
+            pageToken: token.pageToken,
+            includeDrafts: true,
+          });
+        }
         const changes = syncPage.messages.map((message) =>
           parsedMessagePatch(accountId, provider.name, message),
         );
@@ -172,8 +195,11 @@ export function createEmailProviderMailboxSource(input: {
           },
         };
       } catch (error) {
-        if (error instanceof InvalidMailboxSyncCursorError) {
-          return { status: "reset_required", scopeId: "primary" };
+        if (
+          error instanceof InvalidMailboxSyncCursorError ||
+          error instanceof ImapUidValidityChangedError
+        ) {
+          return { status: "reset_required", scopeId };
         }
         return mapProviderError(error);
       }
@@ -183,10 +209,11 @@ export function createEmailProviderMailboxSource(input: {
         const page = await provider.getMailboxSyncPage({
           cursor: position.checkpoint || undefined,
           folderId:
-            provider.name === "microsoft" && position.streamId !== "primary"
+            provider.localMailSyncStrategy === "folder-delta" &&
+            position.streamId !== "primary"
               ? position.streamId
               : undefined,
-          limit: pageSize,
+          limit: Math.min(pageSize, maxPageSize),
         });
         if (page.reset) {
           return { status: "reset_required", scopeId: position.streamId };
@@ -224,7 +251,10 @@ export function createEmailProviderMailboxSource(input: {
           },
         };
       } catch (error) {
-        if (error instanceof InvalidMailboxSyncCursorError) {
+        if (
+          error instanceof InvalidMailboxSyncCursorError ||
+          error instanceof ImapUidValidityChangedError
+        ) {
           return { status: "reset_required", scopeId: position.streamId };
         }
         return mapProviderError(error);
@@ -419,10 +449,12 @@ async function catchUpCheckpoint(
     });
     if (page.cursor) return page.cursor;
   } catch (error) {
-    if (provider.name === "microsoft") throw error;
+    if (provider.name !== "google") throw error;
     // Fall back to the newest numeric Gmail history id we already fetched.
   }
-  return encodedGmailCursorFromMessages(messages);
+  return provider.name === "google"
+    ? encodedGmailCursorFromMessages(messages)
+    : null;
 }
 
 async function finalCatchUpFrom({
@@ -457,7 +489,8 @@ async function finalCatchUpFrom({
 }
 
 function scopedFolderId(provider: EmailProvider, scope: ScopeDescriptor) {
-  if (provider.name === "microsoft") return scope.folderId ?? scope.id;
+  if (provider.localMailSyncStrategy === "folder-delta")
+    return scope.folderId ?? scope.id;
   return scope.folderId ?? undefined;
 }
 
@@ -488,6 +521,7 @@ function encodedGmailCursorFromMessages(
 }
 
 function isMissingProviderResource(error: unknown) {
+  if (error instanceof ImapMessageNotFoundError) return true;
   return (
     extractGmailErrorInfo(error).status === 404 ||
     extractOutlookErrorInfo(error).status === 404
@@ -502,6 +536,11 @@ function isRejectedProviderRequest(error: unknown) {
 }
 
 function mapProviderError(error: unknown) {
+  if (
+    error instanceof ImapAuthenticationError ||
+    error instanceof ImapDisconnectedError
+  )
+    return { status: "blocked_auth" as const };
   if (isProviderRateLimitModeError(error)) {
     return {
       status: "paused" as const,

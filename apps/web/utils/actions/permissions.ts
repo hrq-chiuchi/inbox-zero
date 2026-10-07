@@ -14,10 +14,21 @@ import {
   isMicrosoftProvider,
 } from "@/utils/email/provider-types";
 import type { Logger } from "@/utils/logger";
+import {
+  createImapMailbox,
+  verifyMailboxCredentials,
+} from "@/utils/imap/client";
 
 export const checkPermissionsAction = actionClient
   .metadata({ name: "checkPermissions" })
   .action(async ({ ctx: { emailAccountId, provider, logger } }) => {
+    if (provider === "imap") {
+      return {
+        hasMailboxCredentials: await checkImapCredentials(emailAccountId),
+        hasAllPermissions: undefined,
+        hasRefreshToken: undefined,
+      };
+    }
     if (isMicrosoftProvider(provider)) {
       return checkOutlookPermissions({ emailAccountId, logger });
     }
@@ -68,6 +79,12 @@ export const adminCheckPermissionsAction = adminActionClient
       });
       if (!emailAccount) throw new SafeError("Email account not found");
       const emailAccountId = emailAccount.id;
+      if (emailAccount.account.provider === "imap") {
+        return {
+          hasMailboxCredentials: await checkImapCredentials(emailAccountId),
+          hasAllPermissions: undefined,
+        };
+      }
 
       if (isMicrosoftProvider(emailAccount.account.provider)) {
         return checkOutlookPermissions({ emailAccountId, logger });
@@ -111,5 +128,15 @@ async function checkOutlookPermissions({
   } catch (error) {
     logger.error("Outlook permissions check failed", { error });
     return { hasAllPermissions: false, hasRefreshToken: false };
+  }
+}
+
+async function checkImapCredentials(emailAccountId: string) {
+  try {
+    const mailbox = await createImapMailbox(emailAccountId);
+    await verifyMailboxCredentials(mailbox);
+    return true;
+  } catch {
+    return false;
   }
 }

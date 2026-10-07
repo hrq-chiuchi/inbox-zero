@@ -20,6 +20,7 @@ import type {
   ConversationKey,
   LocalRevision,
   MessageKey,
+  Provider,
 } from "@inboxzero/mail-core/identities";
 import { blobIdSchema } from "@inboxzero/mail-core/identities";
 import {
@@ -1560,6 +1561,27 @@ export async function createSqliteMailStore(
         };
       });
     },
+    async discardBootstrapScan(input) {
+      return driver.write(async (tx) => {
+        if (!(await accountGenerationMatches(tx, input.session))) {
+          return { status: "stale" as const };
+        }
+        const removed = await tx.execute(
+          "DELETE FROM bootstrap_scans WHERE account_id = ? AND scope_id = ? AND bootstrap_id = ?",
+          [input.session.accountId, input.scopeId, input.bootstrapId],
+        );
+        if (!removed.changedRows) return { status: "stale" as const };
+        await tx.execute(
+          "DELETE FROM bootstrap_seen_messages WHERE account_id = ? AND scope_id = ?",
+          [input.session.accountId, input.scopeId],
+        );
+        await tx.execute(
+          "DELETE FROM bootstrap_existing_messages WHERE account_id = ? AND scope_id = ?",
+          [input.session.accountId, input.scopeId],
+        );
+        return { status: "committed" as const };
+      });
+    },
     async startBootstrapScan(input) {
       return driver.write(async (tx) => {
         if (!(await accountGenerationMatches(tx, input.session))) {
@@ -2286,7 +2308,7 @@ async function inspectState(
     revision,
     accounts: accounts.map((row) => ({
       accountId: String(row.account_id),
-      provider: String(row.provider) as "google" | "microsoft",
+      provider: String(row.provider) as Provider,
       generation: String(row.generation),
       assistantCursor:
         row.assistant_cursor == null ? null : String(row.assistant_cursor),
@@ -2373,7 +2395,7 @@ async function resetAccountForGeneration(
   tx: SqlTransaction,
   input: {
     accountId: string;
-    provider: "google" | "microsoft";
+    provider: Provider;
     generation: string;
   },
 ) {
@@ -2651,7 +2673,7 @@ async function applyChange(tx: SqlTransaction, change: ProviderChange) {
       current.folderId != null &&
       (current.folderId === scopeFolderId ||
         current.folderId === change.scopeId);
-    if (!namedInbox && !(leftItsFolder && current.roles.includes("inbox"))) {
+    if (!namedInbox && !leftItsFolder) {
       return;
     }
     const next = applyMetadataChange(current, { kind: "archive" });
@@ -2659,6 +2681,16 @@ async function applyChange(tx: SqlTransaction, change: ProviderChange) {
       ...current,
       ...next,
       folderId: leftItsFolder ? null : current.folderId,
+      roles: leftItsFolder
+        ? current.roles.filter(
+            (role) =>
+              role !== "inbox" &&
+              role !== "sent" &&
+              role !== "draft" &&
+              role !== "trash" &&
+              role !== "spam",
+          )
+        : next.roles,
     });
     await recomputeTargets(tx, [change.key]);
   }

@@ -61,6 +61,7 @@ export const GET = withEmailProvider(
       return NextResponse.json(thread);
     } catch (error) {
       if (
+        emailProvider.name !== "imap" &&
         isEmailProviderRateLimitError({
           error,
           provider: emailProvider.name,

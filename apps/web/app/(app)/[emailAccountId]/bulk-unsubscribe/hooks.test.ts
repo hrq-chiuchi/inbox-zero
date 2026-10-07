@@ -16,6 +16,7 @@ const {
   fetchAllSenderThreadsMock,
   toastErrorMock,
   captureExceptionMock,
+  accountMock,
 } = vi.hoisted(() => ({
   setSenderStatusActionMock: vi.fn(),
   unsubscribeSenderActionMock: vi.fn(),
@@ -26,11 +27,16 @@ const {
   fetchAllSenderThreadsMock: vi.fn(),
   toastErrorMock: vi.fn(),
   captureExceptionMock: vi.fn(),
+  accountMock: { provider: "google" },
 }));
 
 vi.mock("@/utils/actions/unsubscriber", () => ({
   setSenderStatusAction: setSenderStatusActionMock,
   unsubscribeSenderAction: unsubscribeSenderActionMock,
+}));
+
+vi.mock("@/providers/EmailAccountProvider", () => ({
+  useAccount: () => accountMock,
 }));
 
 vi.mock("@/utils/actions/premium", () => ({
@@ -111,6 +117,7 @@ const sharedHookArgs = {
 describe("bulk unsubscribe hooks", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    accountMock.provider = "google";
     setSenderStatusActionMock.mockResolvedValue({
       data: { autoArchived: true },
     });
@@ -122,6 +129,85 @@ describe("bulk unsubscribe hooks", () => {
       mutations: [],
     });
     fetchAllSenderThreadsMock.mockResolvedValue({ threads: [] });
+  });
+
+  describe("Hostinger sender actions", () => {
+    it("does not block or meter a sender without an unsubscribe link", async () => {
+      accountMock.provider = "imap";
+      const { result } = renderHook(() =>
+        useUnsubscribe({ item: getRow(), ...sharedHookArgs }),
+      );
+
+      await act(async () => result.current.onUnsubscribe());
+
+      expect(result.current.canBlockSender).toBe(false);
+      expect(setSenderStatusActionMock).not.toHaveBeenCalled();
+      expect(queueArchiveSendersMock).not.toHaveBeenCalled();
+      expect(decrementCreditMock).not.toHaveBeenCalled();
+      expect(toastErrorMock).toHaveBeenCalled();
+    });
+
+    it("does not optimistically block mixed bulk selections", async () => {
+      accountMock.provider = "imap";
+      const { result } = renderHook(() =>
+        useBulkUnsubscribe({
+          ...sharedHookArgs,
+          filter: "all",
+        }),
+      );
+      await act(async () => {
+        const operation = await result.current.onBulkUnsubscribe([
+          getRow(),
+          getRow({
+            name: "linked@example.com",
+            unsubscribeLink: "https://example.com/unsubscribe",
+          }),
+        ]);
+        expect(operation).toMatchObject({ successCount: 0, failureCount: 2 });
+      });
+
+      expect(sharedHookArgs.mutate).not.toHaveBeenCalled();
+      expect(setSenderStatusActionMock).not.toHaveBeenCalled();
+      expect(unsubscribeSenderActionMock).not.toHaveBeenCalled();
+      expect(decrementCreditMock).not.toHaveBeenCalled();
+    });
+
+    it("keeps real unsubscribe and archive available", async () => {
+      accountMock.provider = "imap";
+      unsubscribeSenderActionMock.mockResolvedValue({
+        data: { unsubscribe: { success: true } },
+      });
+      const { result } = renderHook(() =>
+        useUnsubscribe({
+          item: getRow({ unsubscribeLink: "https://example.com/unsubscribe" }),
+          ...sharedHookArgs,
+        }),
+      );
+
+      await act(async () => result.current.onUnsubscribe());
+
+      expect(unsubscribeSenderActionMock).toHaveBeenCalled();
+      expect(queueArchiveSendersMock).toHaveBeenCalled();
+      expect(decrementCreditMock).toHaveBeenCalled();
+      expect(setSenderStatusActionMock).not.toHaveBeenCalled();
+    });
+
+    it("does not enable native autoarchive through callbacks", async () => {
+      accountMock.provider = "imap";
+      const { result } = renderHook(() =>
+        useAutoArchive({ item: getRow(), ...sharedHookArgs }),
+      );
+
+      await act(async () => {
+        await result.current.onAutoArchive();
+        await result.current.onAutoArchiveAndLabel("label-1", "News");
+        await result.current.onDisableAutoArchive();
+      });
+
+      expect(setSenderStatusActionMock).not.toHaveBeenCalled();
+      expect(queueArchiveSendersMock).not.toHaveBeenCalled();
+      expect(decrementCreditMock).not.toHaveBeenCalled();
+    });
   });
 
   describe("useDeleteAllFromSender", () => {

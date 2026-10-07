@@ -76,6 +76,17 @@ describe("startDesktopAutoUpdate", () => {
 
   afterEach(() => {
     errorSpy.mockRestore();
+    vi.unstubAllEnvs();
+  });
+
+  it("prevents public-release updates from replacing a self-hosted build", async () => {
+    vi.stubEnv("INBOX_ZERO_DEFAULT_APP_URL", "https://mail.fixture.test");
+    await expect(startDesktopAutoUpdate(true)).resolves.toBe(false);
+    await expect(checkForDesktopUpdatesManually(() => {}, true)).resolves.toBe(
+      false,
+    );
+    expect(autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+    expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
   });
 
   it("skips the update check in development", async () => {

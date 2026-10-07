@@ -76,6 +76,7 @@ import {
 } from "@/providers/EmailAccountProvider";
 import {
   isGoogleProvider,
+  isFolderProvider,
   isMicrosoftProvider,
 } from "@/utils/email/provider-types";
 import { getOpenInMailboxLabel } from "@/utils/url";
@@ -124,6 +125,7 @@ export function MailShell() {
   const { data: accountsData } = useAccounts();
   const isGoogle = isGoogleProvider(provider);
   const isOutlook = isMicrosoftProvider(provider);
+  const hasFolders = isFolderProvider(provider);
   const { userLabels } = useEmailLabels();
   const { userLabels: allLabels, mutate: mutateLabels } = useLabels();
   const { folders } = useFolders(provider);
@@ -848,7 +850,7 @@ export function MailShell() {
   const canLabel =
     currentLabelTargets.length > 0 &&
     (isGoogleProvider(labelAccount?.account.provider) ||
-      isMicrosoftProvider(labelAccount?.account.provider)) &&
+      isFolderProvider(labelAccount?.account.provider)) &&
     currentLabelTargets.every(
       (target) => target.emailAccountId === labelAccountId,
     );
@@ -1032,8 +1034,10 @@ export function MailShell() {
           ? senderCommands?.unsubscribe
           : undefined,
       toggleAutoArchive:
-        !isMailOverlayOpen && !senderCommands?.isAutoArchiveDisabled
-          ? senderCommands?.toggleAutoArchive
+        !isMailOverlayOpen &&
+        senderCommands?.canManageAutoArchive &&
+        !senderCommands.isAutoArchiveDisabled
+          ? senderCommands.toggleAutoArchive
           : undefined,
       next: (event) => {
         if (openThreadId && event?.key === "ArrowDown") return;
@@ -1257,10 +1261,10 @@ export function MailShell() {
   );
   const searchFolders = useMemo(
     () =>
-      isOutlook && !isAllAccounts
+      hasFolders && !isAllAccounts
         ? getMailSearchFolders(folders)
         : NO_SEARCH_OPTIONS,
-    [folders, isAllAccounts, isOutlook],
+    [folders, isAllAccounts, hasFolders],
   );
   const showSplitTabs = !isScoped && !searchQuery;
   const threadCount = threads.length;
@@ -1379,6 +1383,7 @@ export function MailShell() {
                 searchVariant={getMailSearchVariant({
                   isAllAccounts,
                   isOutlook,
+                  isImap: provider === "imap",
                 })}
                 onToggleLayout={toggleLayout}
                 expandedPreview={expandedPreview}
@@ -1545,11 +1550,13 @@ export function MailShell() {
 function getMailSearchVariant({
   isAllAccounts,
   isOutlook,
+  isImap,
 }: {
   isAllAccounts: boolean;
   isOutlook: boolean;
+  isImap: boolean;
 }): "gmail" | "outlook" | "common" {
-  if (isAllAccounts) return "common";
+  if (isAllAccounts || isImap) return "common";
   if (isOutlook) return "outlook";
   return "gmail";
 }

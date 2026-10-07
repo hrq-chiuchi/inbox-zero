@@ -18,6 +18,17 @@ INBOX_ZERO_APP_URL=http://localhost:3000 pnpm --filter @inboxzero/desktop dev
 
 Sign-in uses the system browser and returns through `inboxzero://`. The web app's `DESKTOP_AUTH_ORIGIN` defaults to this scheme.
 
+## Hostinger mailboxes
+
+Desktop **0.1.1 or newer** supports Hostinger IMAP mailboxes alongside Gmail and Outlook. Upgrade before connecting Hostinger; existing native caches migrate without discarding messages, drafts, or queued operations.
+
+To package an installer that opens your instance by default, set `INBOX_ZERO_DEFAULT_APP_URL=https://yourdomain.com` when running `dist:win` or `dist:mac`. The build embeds that default; `INBOX_ZERO_APP_URL` still overrides it at launch. These customized builds do not use the public Inbox Zero update feed: install later builds published by your administrator instead.
+
+For a self-hosted deployment, set `INBOX_ZERO_APP_URL=https://yourdomain.com` in the desktop process environment and restart the app. Sign in with Google or Microsoft, then choose **Accounts → Add Hostinger** and enter your mailbox password. Credentials remain encrypted on the server, not in the desktop cache.
+
+Inbox Zero's server polls incoming Hostinger mail independently of the desktop app. Quitting the desktop stops local sync and desktop notifications, but does not stop configured server-side rules when the server scheduler and workers remain running.
+
+
 ## Multiple windows
 
 File → New Window (⌘N / Ctrl+N) opens another mailbox window. ⌘-click or Ctrl-click an account in the switcher to open that inbox in its own window. Each window keeps its own account and size; they are restored on the next launch.

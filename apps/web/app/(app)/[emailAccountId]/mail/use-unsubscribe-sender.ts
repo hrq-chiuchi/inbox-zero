@@ -26,6 +26,7 @@ import {
 } from "@/utils/parse/unsubscribe";
 import type { ParsedMessage } from "@/utils/types";
 import { createSearchParams } from "@/utils/url";
+import { isImapProvider } from "@/utils/email/provider-types";
 
 /**
  * Sender actions shared by the mail list and reader.
@@ -40,7 +41,8 @@ import { createSearchParams } from "@/utils/url";
 export function useUnsubscribeSender(
   message: Pick<ParsedMessage, "headers" | "threadId"> | null,
 ) {
-  const { emailAccountId } = useAccount();
+  const { emailAccountId, provider } = useAccount();
+  const supportsSenderFilters = !isImapProvider(provider);
   const { hasUnsubscribeAccess, mutate: refetchPremium } = usePremium();
   const { PremiumModal, openModal } = usePremiumModal();
   const { queueArchiveSenders } = useArchiveSenderQueueActions(emailAccountId);
@@ -101,7 +103,12 @@ export function useUnsubscribeSender(
   );
 
   const onToggleAutoArchive = useCallback(async () => {
-    if (!senderEmail || isAutoArchiveStatusLoading || isUpdatingAutoArchive)
+    if (
+      !supportsSenderFilters ||
+      !senderEmail ||
+      isAutoArchiveStatusLoading ||
+      isUpdatingAutoArchive
+    )
       return;
 
     if (!isAutoArchived && !hasUnsubscribeAccess) {
@@ -154,6 +161,7 @@ export function useUnsubscribeSender(
       .then(() => refetchPremium())
       .catch(captureException);
   }, [
+    supportsSenderFilters,
     canonicalSenderEmail,
     refetchSenderStats,
     emailAccountId,
@@ -176,6 +184,12 @@ export function useUnsubscribeSender(
     )
       return;
     if (!canUnsubscribe) {
+      if (!supportsSenderFilters) {
+        toast.error(
+          "This sender has no unsubscribe link. Hostinger does not support sender blocking. You can still archive existing emails.",
+        );
+        return;
+      }
       if (isAutoArchiveStatusLoading) return;
       if (!isAutoArchived) await onToggleAutoArchive();
       return;
@@ -232,6 +246,7 @@ export function useUnsubscribeSender(
       .catch(() => {});
   }, [
     canUnsubscribe,
+    supportsSenderFilters,
     isSenderStatsLoading,
     isAutoArchiveStatusLoading,
     isUpdatingAutoArchive,
@@ -252,15 +267,19 @@ export function useUnsubscribeSender(
 
   return {
     isUnsubscribeDisabled:
+      (!supportsSenderFilters && !canUnsubscribe) ||
       isUpdatingAutoArchive ||
       (isSenderStatsLoading && !httpLink) ||
       (!canUnsubscribe && (isAutoArchiveStatusLoading || isAutoArchived)),
     unsubscribeLabel: canUnsubscribe
       ? "Unsubscribe from sender"
-      : isAutoArchived
-        ? "Sender blocked"
-        : "Block sender",
-    canManageAutoArchive: Boolean(senderEmail),
+      : !supportsSenderFilters
+        ? "No unsubscribe link"
+        : isAutoArchived
+          ? "Sender blocked"
+          : "Block sender",
+    canManageSenderActions: Boolean(senderEmail),
+    canManageAutoArchive: Boolean(senderEmail && supportsSenderFilters),
     isAutoArchived,
     isAutoArchiveStatusLoading,
     isUpdatingAutoArchive,

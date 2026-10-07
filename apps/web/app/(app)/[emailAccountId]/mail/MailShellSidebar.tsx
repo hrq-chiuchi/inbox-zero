@@ -34,6 +34,7 @@ import {
 } from "@/utils/actions/mail";
 import {
   isGoogleProvider,
+  isFolderProvider,
   isMicrosoftProvider,
 } from "@/utils/email/provider-types";
 import { getActionErrorMessage } from "@/utils/error";
@@ -81,6 +82,7 @@ export const MailShellSidebar = memo(function MailShellSidebar({
   const { emailAccountId, provider } = useAccount();
   const isGoogle = isGoogleProvider(provider);
   const isOutlook = isMicrosoftProvider(provider);
+  const hasFolders = isFolderProvider(provider);
   const terminology = getEmailTerminology(provider);
   const { userLabels: allLabels, mutate: mutateLabels } = useLabels();
   const { folders, mutate: mutateFolders } = useFolders(provider);
@@ -201,7 +203,7 @@ export const MailShellSidebar = memo(function MailShellSidebar({
           activeFolderId={activeFolderId}
           hrefFor={hrefFor}
           labels={isAllAccounts ? NO_LABELS : allLabels}
-          folders={isAllAccounts || !isOutlook ? NO_FOLDERS : folders}
+          folders={isAllAccounts || !hasFolders ? NO_FOLDERS : folders}
           countsById={isAllAccounts ? NO_COUNTS : countsById}
           categories={
             isAllAccounts
@@ -218,7 +220,7 @@ export const MailShellSidebar = memo(function MailShellSidebar({
           onEditMailboxItem={onEditMailboxItem}
           onDeleteMailboxItem={onDeleteMailboxItem}
           labelEditMode={isOutlook ? "color" : "name-and-color"}
-          supportsLabelVisibility={isGoogle}
+          supportsLabelVisibility={isGoogle || provider === "imap"}
           labelColorOptions={
             isOutlook ? OUTLOOK_LABEL_COLOR_OPTIONS : GMAIL_LABEL_COLORS
           }

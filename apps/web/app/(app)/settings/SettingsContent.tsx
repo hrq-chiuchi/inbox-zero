@@ -35,6 +35,7 @@ import { CopyRulesSection } from "@/app/(app)/[emailAccountId]/settings/CopyRule
 import { RuleImportExportSetting } from "@/app/(app)/[emailAccountId]/assistant/settings/RuleImportExportSetting";
 import { ToggleAllRulesSection } from "@/app/(app)/[emailAccountId]/settings/ToggleAllRulesSection";
 import type { GetEmailAccountsResponse } from "@/app/api/user/email-accounts/route";
+import { HostingerAccountForm } from "@/app/(app)/accounts/HostingerAccountForm";
 import { LoadingContent } from "@/components/LoadingContent";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -259,7 +260,15 @@ function EmailAccountSettingsCard({
             {emailAccount.name?.charAt(0) || emailAccount.email?.charAt(0)}
           </AvatarFallback>
         </Avatar>
-        <span className="flex-1 text-sm font-medium">{emailAccount.email}</span>
+        <span className="min-w-0 flex-1 break-all text-sm font-medium">
+          {emailAccount.email}
+        </span>
+        {emailAccount.account.provider === "imap" && (
+          <Badge variant="outline">
+            Hostinger
+            {emailAccount.account.disconnectedAt ? " · Reconnect needed" : ""}
+          </Badge>
+        )}
         {connectedProviders.map((provider) => (
           <Badge
             key={provider}
@@ -294,6 +303,11 @@ function EmailAccountSettingsCard({
 
       {expanded && (
         <>
+          {emailAccount.account.provider === "imap" && (
+            <div className="border-t px-4 py-4">
+              <HostingerAccountForm account={emailAccount} />
+            </div>
+          )}
           <SentMessageOpenTrackingSetting emailAccountId={emailAccount.id} />
           <OrgAnalyticsConsentSection emailAccountId={emailAccount.id} />
           <ToggleAllRulesSection emailAccountId={emailAccount.id} />

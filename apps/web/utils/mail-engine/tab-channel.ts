@@ -1,4 +1,5 @@
 import type { MailClient, WorkAdmission } from "@inboxzero/mail-core/engine";
+import type { Provider } from "@inboxzero/mail-core/identities";
 import type {
   MailboxView,
   QueryHandle,
@@ -18,7 +19,7 @@ export type TabMailMessage =
   | {
       type: "hello";
       accountId: string;
-      provider?: "google" | "microsoft";
+      provider?: Provider;
     }
   | { type: "ready" }
   | { type: "owner"; accountId: string }
@@ -66,7 +67,7 @@ export function bindTabMailOwner(input: {
   bus: TabMailBus;
   ensureAccount?: (input: {
     accountId: string;
-    provider: "google" | "microsoft";
+    provider: Provider;
   }) => Promise<void>;
 }): () => void {
   const handles = new Map<
@@ -125,7 +126,10 @@ export function bindTabMailOwner(input: {
       return;
     }
     if (message.type !== "call") return;
-    const method = input.client[message.method as keyof MailClient];
+    const method =
+      message.method === "ensureAccount"
+        ? input.ensureAccount
+        : input.client[message.method as keyof MailClient];
     if (typeof method !== "function") {
       input.bus.post({
         type: "error",
@@ -162,11 +166,18 @@ export function disposeTabFollowerClient(client: MailClient) {
   followerDisposers.get(client)?.();
 }
 
+export type TabFollowerMailClient = MailClient & {
+  ensureAccount(account: {
+    accountId: string;
+    provider: Provider;
+  }): Promise<void>;
+};
+
 export function createTabFollowerClient(input: {
   accountId: string;
-  provider?: "google" | "microsoft";
+  provider?: Provider;
   bus: TabMailBus;
-}): MailClient {
+}): TabFollowerMailClient {
   const pending = new Map<
     string,
     { resolve: (value: unknown) => void; reject: (error: Error) => void }
@@ -287,7 +298,7 @@ export function createTabFollowerClient(input: {
     };
   }
 
-  const client: MailClient = {
+  const client: TabFollowerMailClient = {
     observeMailbox: (query) => observeRemote("mailbox", [query]),
     observeMailboxCounts: (query) => observeRemote("mailboxCounts", [query]),
     observeMailboxWindow: (query) => {
@@ -316,6 +327,8 @@ export function createTabFollowerClient(input: {
         pageConnectivityOnline(),
         () => call("requestSync", [accountIds]) as Promise<WorkAdmission>,
       ),
+    ensureAccount: (account) =>
+      call("ensureAccount", [account]) as Promise<void>,
     ensureMessageContent: (key) => call("ensureMessageContent", [key]) as never,
     async getDiagnostics(accountId) {
       return call("getDiagnostics", [accountId]) as never;
@@ -390,7 +403,7 @@ function announceOwner(
     bus: TabMailBus;
     ensureAccount?: (account: {
       accountId: string;
-      provider: "google" | "microsoft";
+      provider: Provider;
     }) => Promise<void>;
   },
   message: Extract<TabMailMessage, { type: "hello" }>,

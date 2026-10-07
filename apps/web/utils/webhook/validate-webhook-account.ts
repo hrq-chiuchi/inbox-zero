@@ -40,6 +40,7 @@ const webhookEmailAccountSelect = {
   filingConfirmationSendEmail: true,
   watchEmailsSubscriptionId: true,
   watchEmailsSubscriptionHistory: true,
+  imapConnection: { select: { id: true } },
   account: {
     select: {
       provider: true,
@@ -72,12 +73,20 @@ type WebhookEmailAccount = Prisma.EmailAccountGetPayload<{
 }>;
 
 export async function getWebhookEmailAccount(
-  where: { email: string } | { watchEmailsSubscriptionId: string },
+  where:
+    | { id: string }
+    | { email: string }
+    | { watchEmailsSubscriptionId: string },
   logger: Logger,
 ) {
   let emailAccount: WebhookEmailAccount | null = null;
 
-  if ("email" in where) {
+  if ("id" in where) {
+    emailAccount = await prisma.emailAccount.findUnique({
+      where: { id: where.id },
+      select: webhookEmailAccountSelect,
+    });
+  } else if ("email" in where) {
     emailAccount = await prisma.emailAccount.findUnique({
       where: { email: where.email },
       select: webhookEmailAccountSelect,
@@ -126,12 +135,17 @@ export async function getWebhookEmailAccount(
       dedupeKeyParts: {
         scope: "webhook/account-validation",
         email: "email" in where ? where.email : null,
+        emailAccountId: "id" in where ? where.id : null,
         watchEmailsSubscriptionId:
           "watchEmailsSubscriptionId" in where
             ? where.watchEmailsSubscriptionId
             : null,
         lookupType:
-          "watchEmailsSubscriptionId" in where ? "subscription" : "email",
+          "watchEmailsSubscriptionId" in where
+            ? "subscription"
+            : "id" in where
+              ? "id"
+              : "email",
       },
       ttlSeconds: 10 * 60,
       summaryIntervalSeconds: 2 * 60,
@@ -274,11 +288,15 @@ export async function validateWebhookAccount(
     return { success: false, response: NextResponse.json({ ok: true }) };
   }
 
-  if (
-    !emailAccount.account?.access_token ||
-    !emailAccount.account?.refresh_token
-  ) {
-    logger.error("Missing access or refresh token");
+  const hasMailboxCredentials =
+    emailAccount.account?.provider === "imap"
+      ? Boolean(emailAccount.imapConnection)
+      : Boolean(
+          emailAccount.account?.access_token &&
+            emailAccount.account?.refresh_token,
+        );
+  if (!hasMailboxCredentials) {
+    logger.error("Missing mailbox credentials");
     return { success: false, response: NextResponse.json({ ok: true }) };
   }
 

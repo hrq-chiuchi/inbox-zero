@@ -1,6 +1,9 @@
 import type { EmailProvider } from "@/utils/email/types";
 
-export type EmailProviderRateLimitProvider = EmailProvider["name"];
+export type EmailProviderRateLimitProvider = Exclude<
+  EmailProvider["name"],
+  "imap"
+>;
 
 type EmailProviderRateLimitMetadata = {
   apiErrorType: string;

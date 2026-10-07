@@ -1,5 +1,5 @@
 import type { MailboxWindowHandle, MailClient } from "../engine";
-import { revisionEquals } from "../identities";
+import { revisionEquals, type Provider } from "../identities";
 import type { MailboxView, QueryHandle, QuerySnapshot } from "../queries";
 import { MAIL_IPC_PROTOCOL_VERSION } from "./mail-ipc";
 
@@ -9,7 +9,7 @@ export function createMailIpcClient(
     /** Observations subscribe to snapshots the host pushes when data changes. */
     push: MailIpcPushTransport;
     requestId?: () => string;
-    provider?: "google" | "microsoft";
+    provider?: Provider;
   },
 ): MailClient & { inspect(): Promise<unknown> } {
   const requestId = options.requestId ?? defaultRequestId;

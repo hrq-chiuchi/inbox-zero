@@ -187,6 +187,36 @@ describe("redirectToEmailAccountPath", () => {
       }),
     );
   });
+
+  it("opens the explicitly named owned mailbox instead of the last-account cookie", async () => {
+    mocks.findFirst.mockImplementation(async ({ where }) =>
+      where.userId === "user_123" &&
+      where.email?.equals === "fixture@example.test"
+        ? { id: "hostinger_account" }
+        : null,
+    );
+    await expect(
+      redirectToEmailAccountPath("/mail", {
+        accountEmail: "fixture@example.test",
+        "thread-id": "imap-thread",
+      }),
+    ).rejects.toThrow(
+      "redirect:/hostinger_account/mail?accountEmail=fixture%40example.test&thread-id=imap-thread",
+    );
+    expect(mocks.cookies).not.toHaveBeenCalled();
+  });
+
+  it("does not substitute another mailbox when a message link names a foreign mailbox", async () => {
+    mocks.findFirst.mockImplementation(async ({ where }) =>
+      where.userId === "foreign_user" ? { id: "foreign_account" } : null,
+    );
+    await expect(
+      redirectToEmailAccountPath("/mail", {
+        accountEmail: "foreign@example.test",
+        "thread-id": "foreign-thread",
+      }),
+    ).rejects.toThrow("redirect:/accounts");
+  });
 });
 
 function getAccountRedirectLog(consoleLogSpy: ReturnType<typeof vi.spyOn>) {

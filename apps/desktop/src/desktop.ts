@@ -13,7 +13,9 @@ export type DesktopAuthCallback =
   | { ok: false; error: string };
 
 export function getDesktopAppOrigin(
-  appUrl = process.env.INBOX_ZERO_APP_URL ?? DEFAULT_APP_URL,
+  appUrl = process.env.INBOX_ZERO_APP_URL ??
+    process.env.INBOX_ZERO_DEFAULT_APP_URL ??
+    DEFAULT_APP_URL,
 ): string {
   const parsed = new URL(appUrl);
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {

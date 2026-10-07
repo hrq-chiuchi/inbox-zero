@@ -32,6 +32,7 @@ import { useAccount } from "@/providers/EmailAccountProvider";
 import { onAutoArchive } from "@/utils/actions/client";
 import { COLORS } from "@/utils/colors";
 import { getUserFacingUnsubscribeLink } from "@/utils/parse/unsubscribe";
+import { isImapProvider } from "@/utils/email/provider-types";
 
 export function NewsletterModal(props: {
   newsletter?: Pick<Row, "name" | "unsubscribeLink" | "autoArchived">;
@@ -41,7 +42,8 @@ export function NewsletterModal(props: {
 }) {
   const { newsletter, refreshInterval, onClose, mutate } = props;
 
-  const { emailAccountId, userEmail } = useAccount();
+  const { emailAccountId, userEmail, provider } = useAccount();
+  const supportsSenderFilters = !isImapProvider(provider);
 
   const { userLabels } = useLabels();
 
@@ -62,7 +64,11 @@ export function NewsletterModal(props: {
             </DialogHeader>
 
             <div className="flex space-x-2">
-              <Button size="sm" variant="outline">
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={isImapProvider(provider) && !unsubscribeLink}
+              >
                 <a
                   href={unsubscribeLink || undefined}
                   target={unsubscribeLink ? "_blank" : undefined}
@@ -71,11 +77,19 @@ export function NewsletterModal(props: {
                   Unsubscribe
                 </a>
               </Button>
-              <Tooltip content="Auto archive emails from this sender">
+              <Tooltip
+                content={
+                  supportsSenderFilters
+                    ? "Auto archive emails from this sender"
+                    : "Hostinger does not support automatic archive filters. You can still archive existing emails."
+                }
+              >
                 <Button
                   size="sm"
                   variant="outline"
+                  disabled={!supportsSenderFilters}
                   onClick={() => {
+                    if (!supportsSenderFilters) return;
                     onAutoArchive({
                       emailAccountId,
                       from: newsletter.name,
@@ -85,7 +99,7 @@ export function NewsletterModal(props: {
                   Auto Archive
                 </Button>
               </Tooltip>
-              {newsletter.autoArchived && (
+              {supportsSenderFilters && newsletter.autoArchived && (
                 <Button asChild size="sm" variant="outline">
                   <Link
                     href={getGmailFilterSettingsUrl(userEmail)}

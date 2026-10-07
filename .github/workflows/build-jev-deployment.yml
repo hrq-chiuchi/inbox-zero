@@ -1,0 +1,30 @@
+name: Build Jev deployment image
+on:
+  push:
+    branches: [deploy/openrouter-jev-image]
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: write
+concurrency:
+  group: jev-deployment-image
+  cancel-in-progress: false
+jobs:
+  build:
+    if: github.repository == 'hrq-chiuchi/inbox-zero'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Login to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build upstream application with Jev changes
+        run: docker build --progress=plain -f docker/Dockerfile.prod -t inbox-zero-jev-base:local .
+      - name: Preserve Codex runtime customization
+        run: docker build --progress=plain -t ghcr.io/hrq-chiuchi/inbox-zero-jev:1781107-codex2.2.1 docker/jev-codex
+      - name: Publish deployment image
+        run: docker push ghcr.io/hrq-chiuchi/inbox-zero-jev:1781107-codex2.2.1

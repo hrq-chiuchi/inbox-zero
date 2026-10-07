@@ -59,7 +59,10 @@ import {
   shouldForceNanoModel,
 } from "@/utils/llms/model-usage-guard";
 import { Provider } from "@/utils/llms/config";
-import { createClaudeCodeLanguageModelWithBridgedTools } from "@/utils/llms/cli-provider";
+import {
+  createClaudeCodeLanguageModelWithBridgedTools,
+  createCodexLanguageModelWithBridgedTools,
+} from "@/utils/llms/cli-provider";
 import {
   appendOllamaOnlySystemGuidance,
   OLLAMA_STRUCTURED_OUTPUT_GUIDANCE,
@@ -88,11 +91,8 @@ const logger = createScopedLogger("llms");
 
 const MAX_LOG_LENGTH = 200;
 
-// The Claude Code CLI provider drops AI SDK tools at the LanguageModelV4
-// boundary. Route tool-bearing calls through the package's MCP bridge so the
-// CLI can execute them locally; clear `tools` so the AI SDK does not also try
-// to drive them. No-op for every other provider and for tool-less calls.
-async function bridgeClaudeCodeToolsIfNeeded<T extends Record<string, Tool>>({
+// CLI providers execute tools through MCP instead of the AI SDK loop.
+async function bridgeCliToolsIfNeeded<T extends Record<string, Tool>>({
   provider,
   modelName,
   model,
@@ -109,7 +109,7 @@ async function bridgeClaudeCodeToolsIfNeeded<T extends Record<string, Tool>>({
   tools: T | undefined;
   bridged: boolean;
 }> {
-  if (provider !== Provider.CLAUDE_CODE)
+  if (provider !== Provider.CLAUDE_CODE && provider !== Provider.CODEX_CLI)
     return { model, tools, bridged: false };
   if (!tools || Object.keys(tools).length === 0) {
     return { model, tools, bridged: false };
@@ -128,16 +128,15 @@ async function bridgeClaudeCodeToolsIfNeeded<T extends Record<string, Tool>>({
     return { model, tools: undefined, bridged: true };
   }
 
-  const bridged = await createClaudeCodeLanguageModelWithBridgedTools({
+  const createBridgedModel =
+    provider === Provider.CODEX_CLI
+      ? createCodexLanguageModelWithBridgedTools
+      : createClaudeCodeLanguageModelWithBridgedTools;
+  const bridged = await createBridgedModel({
     modelName,
-    tools: toolsToBridge as unknown as Record<
-      string,
-      {
-        description?: string;
-        inputSchema: unknown;
-        execute?: (input: never, options?: unknown) => unknown;
-      }
-    >,
+    tools: toolsToBridge as unknown as Parameters<
+      typeof createBridgedModel
+    >[0]["tools"],
   });
   return { model: bridged, tools: undefined, bridged: true };
 }
@@ -334,7 +333,7 @@ export function createGenerateText({
         emailAccountId: emailAccount.id,
       });
 
-      const bridged = await bridgeClaudeCodeToolsIfNeeded({
+      const bridged = await bridgeCliToolsIfNeeded({
         provider: candidate.provider,
         modelName: candidate.modelName,
         model: candidate.model,
@@ -770,7 +769,7 @@ export async function chatCompletionStream(
       userId,
       emailAccountId,
     });
-    const bridgedChat = await bridgeClaudeCodeToolsIfNeeded({
+    const bridgedChat = await bridgeCliToolsIfNeeded({
       provider: candidate.provider,
       modelName: candidate.modelName,
       model: candidate.model,
@@ -925,7 +924,7 @@ export async function toolCallAgentStream(options: ToolCallAgentStreamOptions) {
       userId,
       emailAccountId,
     });
-    const bridgedAgent = await bridgeClaudeCodeToolsIfNeeded({
+    const bridgedAgent = await bridgeCliToolsIfNeeded({
       provider: candidate.provider,
       modelName: candidate.modelName,
       model: candidate.model,

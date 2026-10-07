@@ -10,6 +10,10 @@ import type { Logger } from "@/utils/logger";
 import { isDuplicateError } from "@/utils/prisma-helpers";
 import { sendHtmlEmailWithOpenTracking } from "@/utils/email/sent-message-open/sent-message-open.server";
 import type { DurableEmailSendBody } from "./durable-email-send.validation";
+import {
+  ImapAuthenticationError,
+  ImapDisconnectedError,
+} from "@/utils/imap/client";
 
 const PROCESSING_LEASE_MS = 2 * 60 * 1000;
 
@@ -110,10 +114,11 @@ export async function executeDurableEmailSend({
     }
     if (
       stage !== "persist_result" &&
-      classifyEmailAccountProviderIssue({
-        error,
-        provider: provider as "google" | "microsoft",
-      })
+      ((provider === "imap" &&
+        (error instanceof ImapAuthenticationError ||
+          error instanceof ImapDisconnectedError)) ||
+        ((provider === "google" || provider === "microsoft") &&
+          classifyEmailAccountProviderIssue({ error, provider })))
     ) {
       await prisma.emailSendOperation.deleteMany({
         where: { id: existing.id },

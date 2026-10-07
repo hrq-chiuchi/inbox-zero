@@ -1,4 +1,5 @@
 import type { LanguageModelV4 } from "@ai-sdk/provider";
+import { asSchema, type FlexibleSchema } from "ai";
 import { env } from "@/env";
 import { SafeError } from "@/utils/error";
 import { Provider } from "@/utils/llms/config";
@@ -14,7 +15,7 @@ type CliModelFactory = (
 
 type McpBridgedTool = {
   description?: string;
-  inputSchema: unknown;
+  inputSchema: FlexibleSchema<unknown>;
   execute?: (input: never, options?: unknown) => unknown;
 };
 
@@ -22,6 +23,29 @@ type McpBridgeFactory = (
   name: string,
   tools: Record<string, McpBridgedTool>,
 ) => unknown;
+
+type CodexMcpServer = {
+  config: unknown;
+  stop: () => Promise<void>;
+};
+
+type CodexMcpTool = {
+  name: string;
+  description: string;
+  inputSchema: unknown;
+  execute: (input: unknown) => Promise<unknown>;
+};
+
+type CodexMcpServerFactory = (options: {
+  name: string;
+  tools: CodexMcpTool[];
+}) => Promise<CodexMcpServer>;
+
+type CodexAppServerProvider = CliModelFactory & { close: () => Promise<void> };
+
+type CodexAppServerFactory = (options: {
+  defaultSettings: Record<string, unknown>;
+}) => CodexAppServerProvider;
 
 const runtimeImport = (specifier: string): Promise<CliProviderModule> =>
   import(/* webpackIgnore: true */ specifier);
@@ -111,6 +135,234 @@ export async function createClaudeCodeLanguageModelWithBridgedTools({
   });
 
   return wrapWithUnprefixedToolNames(inner);
+}
+
+export async function createCodexLanguageModelWithBridgedTools({
+  modelName,
+  tools,
+}: {
+  modelName: string;
+  tools: Record<string, McpBridgedTool>;
+}): Promise<LanguageModelV4> {
+  assertCliLlmEnabled(Provider.CODEX_CLI);
+  const module = await importOptionalProviderPackage(
+    "ai-sdk-provider-codex-cli",
+    Provider.CODEX_CLI,
+  );
+  // Optional package exports are checked for callability by getFactory.
+  const createAppServer = getFactory(
+    module,
+    "createCodexAppServer",
+    Provider.CODEX_CLI,
+  ) as unknown as CodexAppServerFactory;
+  const createServer = getFactory(
+    module,
+    "createLocalMcpServer",
+    Provider.CODEX_CLI,
+  ) as unknown as CodexMcpServerFactory;
+  const schemas = await Promise.all(
+    Object.entries(tools).map(async ([name, tool]) => {
+      if (!tool.execute) {
+        throw new SafeError(`Codex MCP tool "${name}" requires an executor.`);
+      }
+      const schema = asSchema(tool.inputSchema);
+      return { name, tool, schema, inputSchema: await schema.jsonSchema };
+    }),
+  );
+
+  const openModel = async (
+    options: Parameters<LanguageModelV4["doStream"]>[0],
+  ) => {
+    const server = await createServer({
+      name: "inboxzero",
+      tools: schemas.map(({ name, tool, schema, inputSchema }) => ({
+        name,
+        description: tool.description ?? name,
+        inputSchema,
+        async execute(input) {
+          options.abortSignal?.throwIfAborted();
+          const validated = await schema.validate?.(input);
+          if (validated && !validated.success) throw validated.error;
+          return await tool.execute!(
+            (validated?.success ? validated.value : input) as never,
+            {
+              toolCallId: crypto.randomUUID(),
+              messages: options.prompt,
+              abortSignal: options.abortSignal,
+            },
+          );
+        },
+      })),
+    });
+    let provider: CodexAppServerProvider | undefined;
+    try {
+      provider = createAppServer({
+        defaultSettings: {
+          approvalPolicy: "on-request",
+          sandboxPolicy: "read-only",
+          ...(env.CODEX_CLI_PATH ? { codexPath: env.CODEX_CLI_PATH } : {}),
+          mcpServers: { inboxzero: server.config },
+          autoApprove: false,
+          serverRequests: {
+            onMcpElicitation: async ({
+              params,
+            }: {
+              params: {
+                serverName: string;
+                _meta?: Record<string, unknown>;
+              };
+            }) =>
+              params.serverName === "inboxzero" &&
+              params._meta?.codex_approval_kind === "mcp_tool_call"
+                ? { action: "accept", content: {} }
+                : { action: "decline", content: null },
+          },
+          logger: false,
+        },
+      });
+      const model = provider(modelName);
+      const close = async () => {
+        try {
+          await provider!.close();
+        } finally {
+          await server.stop();
+        }
+      };
+      return { model, close };
+    } catch (error) {
+      await server.stop();
+      await provider?.close();
+      throw error;
+    }
+  };
+
+  return {
+    specificationVersion: "v4",
+    provider: Provider.CODEX_CLI,
+    modelId: modelName,
+    supportedUrls: {},
+    async doGenerate(options) {
+      const { model, close } = await openModel(options);
+      try {
+        const result = await model.doGenerate(options);
+        const callNames = new Map<string, string>();
+        return {
+          ...result,
+          content: result.content.map((part) =>
+            normalizeCodexToolPart(part, tools, callNames),
+          ),
+        };
+      } finally {
+        await close();
+      }
+    },
+    async doStream(options) {
+      const abortController = new AbortController();
+      const abortSignal = options.abortSignal
+        ? AbortSignal.any([options.abortSignal, abortController.signal])
+        : abortController.signal;
+      const { model, close } = await openModel({ ...options, abortSignal });
+      try {
+        const result = await model.doStream({ ...options, abortSignal });
+        const reader = result.stream.getReader();
+        const callNames = new Map<string, string>();
+        let closed = false;
+        const stop = async () => {
+          if (closed) return;
+          closed = true;
+          await close();
+        };
+        return {
+          ...result,
+          stream: new ReadableStream({
+            async pull(controller) {
+              try {
+                const { done, value } = await reader.read();
+                if (done) {
+                  await stop();
+                  controller.close();
+                } else {
+                  controller.enqueue(
+                    normalizeCodexToolPart(value, tools, callNames),
+                  );
+                }
+              } catch (error) {
+                await stop();
+                controller.error(error);
+              }
+            },
+            async cancel(reason) {
+              abortController.abort(reason);
+              try {
+                await reader.cancel(reason);
+              } finally {
+                await stop();
+              }
+            },
+          }),
+        };
+      } catch (error) {
+        abortController.abort(error);
+        await close();
+        throw error;
+      }
+    },
+  } as LanguageModelV4;
+}
+
+function normalizeCodexToolPart<T>(
+  part: T,
+  tools: Record<string, McpBridgedTool>,
+  callNames: Map<string, string>,
+): T {
+  const value = part as Record<string, unknown>;
+  const toolName =
+    typeof value.toolName === "string"
+      ? value.toolName.replace(/^mcp__inboxzero__/, "")
+      : typeof value.id === "string"
+        ? callNames.get(value.id)
+        : undefined;
+  if (!toolName || !Object.hasOwn(tools, toolName)) return part;
+  if (value.type === "tool-input-start" && typeof value.id === "string") {
+    callNames.set(value.id, toolName);
+  }
+  if (value.type === "tool-input-delta" || value.type === "tool-call") {
+    const field = value.type === "tool-call" ? "input" : "delta";
+    const payload = JSON.parse(value[field] as string);
+    return {
+      ...value,
+      ...(value.toolName ? { toolName } : {}),
+      [field]: JSON.stringify(payload.arguments),
+    } as T;
+  }
+  if (value.type === "tool-result") {
+    const payload = value.result as {
+      result?: {
+        content?: { type: string; text?: string }[];
+        isError?: boolean;
+      };
+      error?: unknown;
+    };
+    const text = payload.result?.content
+      ?.filter((item) => item.type === "text")
+      .map((item) => item.text ?? "")
+      .join("\n");
+    let result: unknown = text ?? payload.error;
+    if (text) {
+      try {
+        result = JSON.parse(text);
+      } catch {
+        // MCP permits plain-text results as well as JSON.
+      }
+    }
+    return {
+      ...value,
+      toolName,
+      result,
+      ...(payload.error || payload.result?.isError ? { isError: true } : {}),
+    } as T;
+  }
+  return value.toolName ? ({ ...value, toolName } as T) : part;
 }
 
 const TOOL_NAME_PREFIX = `mcp__${CLAUDE_CODE_MCP_SERVER_NAME}__`;

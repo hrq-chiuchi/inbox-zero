@@ -1100,6 +1100,12 @@ function ComposeEmailFormContent({
     setIsReconnectingContacts(true);
 
     try {
+      if (accountProvider === "imap") {
+        redirectToSafeUrl(
+          `/accounts?reconnectEmailAccountId=${encodeURIComponent(selectedEmailAccountId)}`,
+        );
+        return;
+      }
       const oauthProvider = isMicrosoftProvider(accountProvider)
         ? "microsoft"
         : "google";

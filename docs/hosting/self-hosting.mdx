@@ -130,6 +130,26 @@ Your application should now be accessible at:
 
 **Note:** For production deployments, you should set up a reverse proxy (like Nginx, Caddy, or use a cloud load balancer) to handle SSL/TLS termination and route traffic to your Docker container.
 
+## Hostinger Mailboxes
+
+Sign in to Inbox Zero with your existing Google or Microsoft login, then open **Accounts → Add Hostinger**. Enter the complete mailbox email address, its mailbox password (not your hosting-account password), and an optional sender name.
+
+Connections use fixed Hostinger endpoints:
+
+| Protocol | Server | Port | Security |
+|----------|--------|------|----------|
+| IMAP | `imap.hostinger.com` | `993` | TLS |
+| SMTP | `smtp.hostinger.com` | `465` | TLS, recommended |
+| SMTP | `smtp.hostinger.com` | `587` | Required STARTTLS |
+
+Both connections are authenticated before credentials are saved. Configure nonempty `EMAIL_ENCRYPT_SECRET` and `EMAIL_ENCRYPT_SALT`; mailbox passwords are encrypted in PostgreSQL and never returned by account-list APIs. Keep these encryption keys with your protected backups. Connecting Hostinger adds a mailbox, not another application sign-in method.
+
+Reading, sending, replies, forwards, attachments, mailbox drafts, folders, read/starred flags, and independent keyword labels are supported. Hostinger does not expose Gmail/Outlook categories, OAuth contact-directory permissions, push subscriptions, or provider-native auto-archive/block filters. Those unsupported controls are unavailable; existing-message archive and real unsubscribe links remain usable.
+
+Run the database migrations when updating the web image. Upgrade the desktop app to **0.1.1 or newer** before opening Hostinger accounts; its native mailbox cache migrates existing Gmail/Outlook data without discarding drafts or queued work. Point self-hosted desktop installations at your instance with `INBOX_ZERO_APP_URL`, or embed `INBOX_ZERO_DEFAULT_APP_URL` when packaging a custom installer. Customized installers do not auto-update from the public Inbox Zero feed; distribute later builds through your own deployment.
+
+New-mail automation runs on the server even when the desktop app is closed. Schedule `/api/cron/imap-poll` every minute with `CRON_SECRET` and run your configured queue backend. Custom BullMQ `WORKER_QUEUES` must include `imap-poll:3`; the default worker configuration already includes it. Initial connection establishes an INBOX baseline and does not run rules on historical mail. Reconnect through **Accounts** or **Settings** after changing the mailbox password; reconnect retains the polling position.
+
 ## Scheduled Tasks
 
 The Docker Compose setup includes a `cron` container that handles these scheduled tasks automatically. It runs interval loops rather than a system cron daemon, so the first request is sent when the container starts and subsequent requests use the intervals below.
@@ -138,6 +158,7 @@ The Docker Compose setup includes a `cron` container that handles these schedule
 |------|----------|----------|-------------|
 | **Scheduled mail actions** | Every 15 minutes | `/api/cron/scheduled-actions` | Executes delayed actions when QStash is not configured, and restores snoozed threads |
 | **Automation jobs** | Every 15 minutes | `/api/cron/automation-jobs` | Processes due automation jobs |
+| **Hostinger incoming mail** | Every minute | `/api/cron/imap-poll` | Polls newly delivered IMAP messages for server-side automation |
 | **Email digests** | Every 30 minutes | `/api/resend/digest/all` | Sends due email digests |
 | **Email watch renewal** | Every 6 hours | `/api/watch/all` | Renews Gmail/Outlook push notification subscriptions |
 | **Meeting briefs** | Every 15 minutes | `/api/meeting-briefs` | Sends pre-meeting briefings to users with the feature enabled |
@@ -154,6 +175,9 @@ The bundled Compose service does **not** run the two daily cleanup endpoints. Sc
 
 # Automation jobs - every 15 minutes
 */15 * * * * curl -s -X GET "https://yourdomain.com/api/cron/automation-jobs" -H "Authorization: Bearer YOUR_CRON_SECRET"
+
+# Hostinger incoming mail - every minute
+* * * * * curl -s -X GET "https://yourdomain.com/api/cron/imap-poll" -H "Authorization: Bearer YOUR_CRON_SECRET"
 
 # Email digests - every 30 minutes (optional, only if using digests)
 */30 * * * * curl -s -X GET "https://yourdomain.com/api/resend/digest/all" -H "Authorization: Bearer YOUR_CRON_SECRET"

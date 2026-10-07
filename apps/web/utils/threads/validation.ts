@@ -61,7 +61,12 @@ export const threadsQuery = z
     inboxSection: z.enum(["focused", "other"]).nullish(),
     category: z.string().trim().min(1).max(256).nullish(),
     splitId: z.string().trim().min(1).max(128).nullish(),
-    nextPageToken: microsoftGraphPageTokenSchema,
+    nextPageToken: microsoftGraphPageTokenSchema.refine(
+      (token) =>
+        !token?.startsWith("imap-") ||
+        /^imap-(?:result|page):[a-z0-9]{1,64}:\d{1,10}$/.test(token),
+      { message: "Invalid IMAP page token" },
+    ),
     labelId: z.string().nullish(), // For Google
     labelIds: z.array(z.string()).nullish(), // For Google
     // Threads matching any one of these labels, on top of `labelIds`, which all

@@ -58,7 +58,7 @@ import { ResubscribeDialog } from "@/app/(app)/[emailAccountId]/bulk-unsubscribe
 import { LabelsSubMenu } from "@/components/LabelsSubMenu";
 import type { EmailLabel } from "@/providers/email-label-types";
 import { useAccount } from "@/providers/EmailAccountProvider";
-import { isGoogleProvider } from "@/utils/email/provider-types";
+import { isGoogleProvider, isImapProvider } from "@/utils/email/provider-types";
 import { getEmailTerminology } from "@/utils/terminology";
 import { Tooltip } from "@/components/Tooltip";
 
@@ -159,6 +159,7 @@ function UnsubscribeButton<T extends Row>({
     onUnsubscribe,
     unsubscribeLink,
     hasAutomaticUnsubscribe,
+    canBlockSender,
   } = useUnsubscribe({
     item,
     hasUnsubscribeAccess,
@@ -175,7 +176,9 @@ function UnsubscribeButton<T extends Row>({
     ? "Resubscribe"
     : hasUnsubscribeLink
       ? "Unsubscribe"
-      : "Block";
+      : canBlockSender
+        ? "Block"
+        : "No unsubscribe link";
 
   const senderName = item.fromName || extractNameFromEmail(item.name);
 
@@ -191,6 +194,14 @@ function UnsubscribeButton<T extends Row>({
         {unsubscribeLoading && <ButtonLoader />}
         Resubscribe
       </Button>
+    ) : !canBlockSender && !hasUnsubscribeLink ? (
+      <Tooltip content="This sender has no unsubscribe link. Hostinger does not support sender blocking. You can still archive existing emails.">
+        <span>
+          <Button size="sm" variant="outline" disabled>
+            No unsubscribe link
+          </Button>
+        </span>
+      </Tooltip>
     ) : hasAutomaticUnsubscribe ? (
       // Unsubscribing happens here, so opening the sender's page would only
       // hand the reader work we are about to do for them.
@@ -311,6 +322,7 @@ export function MoreDropdown<T extends Row>({
 }) {
   const { provider } = useAccount();
   const terminology = getEmailTerminology(provider);
+  const supportsSenderFilters = !isImapProvider(provider);
   const isMobile = useIsMobile();
   const [labelSheetOpen, setLabelSheetOpen] = useState(false);
   const { onBulkArchive, isBulkArchiving } = useBulkArchive({
@@ -330,9 +342,11 @@ export function MoreDropdown<T extends Row>({
     emailAccountId,
     filter: filter ?? "all",
   });
-  const showAutoArchive = typeof hasUnsubscribeAccess === "boolean";
+  const showAutoArchive =
+    supportsSenderFilters && typeof hasUnsubscribeAccess === "boolean";
 
   const handleLabelClick = async (label: EmailLabel) => {
+    if (!supportsSenderFilters) return;
     const activeFilter = getActiveLabelFilter(item, label);
 
     if (activeFilter) {
@@ -406,7 +420,12 @@ export function MoreDropdown<T extends Row>({
           <DropdownMenuSeparator />
 
           {/* Organization section */}
-          {isMobile ? (
+          {!supportsSenderFilters ? (
+            <div className="max-w-xs px-2 py-1.5 text-xs text-muted-foreground">
+              Hostinger does not support automatic archive, sender blocking, or
+              filters for future emails. You can still archive existing emails.
+            </div>
+          ) : isMobile ? (
             <DropdownMenuItem onSelect={() => setLabelSheetOpen(true)}>
               <TagIcon className="mr-2 size-4" />
               <span>{labelMenuLabel}</span>
@@ -475,7 +494,10 @@ export function MoreDropdown<T extends Row>({
         </DropdownMenuContent>
       </DropdownMenu>
 
-      <Sheet open={labelSheetOpen} onOpenChange={setLabelSheetOpen}>
+      <Sheet
+        open={supportsSenderFilters && labelSheetOpen}
+        onOpenChange={setLabelSheetOpen}
+      >
         <SheetContent side="bottom" className="max-h-[80vh]">
           <SheetHeader>
             <SheetTitle>{labelMenuLabel}</SheetTitle>

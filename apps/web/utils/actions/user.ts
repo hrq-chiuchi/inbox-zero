@@ -138,6 +138,7 @@ export const deleteEmailAccountAction = actionClientUser
         select: {
           email: true,
           accountId: true,
+          account: { select: { provider: true } },
           user: { select: { email: true } },
         },
       });
@@ -147,7 +148,10 @@ export const deleteEmailAccountAction = actionClientUser
       const organizationIdsToDelete =
         await assertEmailAccountCanBeDeleted(emailAccountId);
 
-      const isPrimaryAccount = emailAccount.email === emailAccount.user.email;
+      // IMAP has no remote watch to revoke; deleting the account cancels polling eligibility.
+      const isPrimaryAccount =
+        emailAccount.account?.provider !== "imap" &&
+        emailAccount.email === emailAccount.user.email;
       const deleteSoloOrganizationsOperation =
         getDeleteSoloOrganizationsOperation(organizationIdsToDelete, [
           emailAccountId,
@@ -162,7 +166,11 @@ export const deleteEmailAccountAction = actionClientUser
       if (isPrimaryAccount) {
         // Check if there are other email accounts
         const otherEmailAccounts = await prisma.emailAccount.findMany({
-          where: { userId, id: { not: emailAccountId } },
+          where: {
+            userId,
+            id: { not: emailAccountId },
+            account: { provider: { not: "imap" } },
+          },
           orderBy: { createdAt: "asc" },
           take: 1,
           select: {

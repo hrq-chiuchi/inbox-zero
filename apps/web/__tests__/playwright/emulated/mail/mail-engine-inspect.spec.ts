@@ -334,6 +334,68 @@ test("joins two different accounts when both tabs start together", async ({
   }
 });
 
+test("boots an unvisited account in All Accounts when the initial account cannot sync", async ({
+  page,
+}, testInfo) => {
+  const emailAccountId = await getEmailAccountId(page);
+  const secondAccount = await createSecondEmailAccount(emailAccountId);
+  const blockInitialAccount = async (route: Route) => {
+    await route.fulfill({
+      status: 401,
+      contentType: "application/json",
+      json: {
+        protocolVersion: 1,
+        requestId: "playwright-combined-blocked-auth",
+        error: {
+          code: "blocked_auth",
+          retryable: true,
+          retryAfterMs: null,
+        },
+      },
+    });
+  };
+  await page.route(
+    `**/api/mail/v1/accounts/${emailAccountId}/changes`,
+    blockInitialAccount,
+  );
+  await page.route(
+    `**/api/mail/v1/accounts/${emailAccountId}/enumeration`,
+    blockInitialAccount,
+  );
+  try {
+    // The secondary route is deliberately never opened in this browser session.
+    await page.goto(`/${emailAccountId}/mail`, {
+      waitUntil: "domcontentloaded",
+    });
+    await expect
+      .poll(
+        () => page.evaluate(() => window.__inboxZeroMailInspect?.accountId),
+        { timeout: 60_000 },
+      )
+      .toBe(emailAccountId);
+    await page.goto(`/${emailAccountId}/mail?accountScope=all`, {
+      waitUntil: "domcontentloaded",
+    });
+    const firstRow = page
+      .getByRole("listbox", { name: "Conversations" })
+      .getByRole("option")
+      .first();
+    await expect(firstRow).toBeVisible({ timeout: 60_000 });
+    await firstRow.click();
+    await expect
+      .poll(() => new URL(page.url()).searchParams.get("thread-account-id"))
+      .toBe(secondAccount.id);
+    await capturePlaywrightCheckpoint(
+      page,
+      testInfo,
+      "mail-engine-unvisited-combined-account",
+    );
+  } finally {
+    await page.goto("about:blank");
+    await deleteSecondEmailAccount(secondAccount.accountId);
+  }
+});
+
 async function waitForMetadataCoverage(page: Page) {
   await expect
     .poll(

@@ -67,6 +67,9 @@ const nextConfig: NextConfig = {
             : {}),
           ...(isProductionBuild
             ? {
+                // Release each compiler's route graph before the next phase.
+                webpackBuildWorker: true,
+                webpackMemoryOptimizations: true,
                 // Keep the static build from fanning out too many workers at
                 // once. This trades a bit of build time for lower peak RAM.
                 // Docker image builds share Depot workers; keep concurrency

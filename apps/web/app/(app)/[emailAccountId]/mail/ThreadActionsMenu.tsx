@@ -58,6 +58,7 @@ export function ThreadActionsMenu({
   const { provider, userEmail } = useAccount();
   const {
     canManageAutoArchive,
+    canManageSenderActions,
     isUnsubscribeDisabled,
     unsubscribeLabel,
     isAutoArchived,
@@ -141,7 +142,7 @@ export function ThreadActionsMenu({
             </DropdownMenuShortcut>
           </DropdownMenuItem>
 
-          {canManageAutoArchive ? (
+          {canManageSenderActions ? (
             <DropdownMenuItem
               disabled={isUnsubscribeDisabled}
               onSelect={onUnsubscribe}
@@ -172,6 +173,12 @@ export function ThreadActionsMenu({
               </DropdownMenuShortcut>
             </DropdownMenuItem>
           ) : null}
+          {canManageSenderActions && !canManageAutoArchive && (
+            <p className="px-2 py-1.5 text-xs text-muted-foreground">
+              Hostinger does not support automatic archive or sender blocking.
+              Use an unsubscribe link or archive existing emails.
+            </p>
+          )}
 
           {openUrl ? (
             <DropdownMenuItem asChild>

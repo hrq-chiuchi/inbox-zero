@@ -45,18 +45,20 @@ Monitor at least:
 - PostgreSQL and Redis connectivity
 - Queue depth and failed jobs
 - Scheduled-task execution
-- OAuth or webhook failures from Google and Microsoft
+- OAuth or webhook failures from Google and Microsoft, and Hostinger IMAP/SMTP authentication failures
 - Transactional email delivery
 - AI-provider errors, latency, and spend
 - Disk, memory, CPU, and database capacity
 
 Alert on repeated failures rather than relying on manual log review.
 
+Mailbox realtime streams also require the TCP `REDIS_URL`, even when `QUEUE_BACKEND=internal`. In Docker Compose, use the Redis service hostname (for example, `redis://redis:6379`), not `localhost`. Check `/api/mail-stream` for an authenticated `ready` event; repeated HTTP 500 responses indicate a stream failure, not an empty mailbox.
+
 ## Scheduled tasks and workers
 
 The web process alone does not run every background workflow. Ensure the deployment runs the scheduler described in [Docker/VPS Deployment](/hosting/self-hosting#scheduled-tasks) and any selected queue worker.
 
-After deployment, verify each enabled job at least once: watch renewal, scheduled actions, automation jobs, digests, meeting briefs, follow-up reminders, Meeting Recorder scheduling, reasoning retention, and unused AI draft cleanup when configured.
+After deployment, verify each enabled job at least once: watch renewal, Hostinger incoming-mail polling, scheduled actions, automation jobs, digests, meeting briefs, follow-up reminders, Meeting Recorder scheduling, reasoning retention, and unused AI draft cleanup when configured.
 
 ## Updating
 
@@ -66,6 +68,11 @@ After deployment, verify each enabled job at least once: watch renewal, schedule
 4. Run the documented migration/deployment process.
 5. Check health, logs, mailbox processing, and scheduled jobs.
 6. Keep the previous version available until the observation window passes.
+
+When building `docker/Dockerfile.prod` on a smaller server, set `--build-arg NODE_BUILD_HEAP_MB=4096` (the default is `8192`). Add `--build-arg NEXT_BUILD_BUNDLER=webpack` when Turbopack's native allocations exceed available memory. Leave headroom for the running database and application; the V8 heap setting does not bound native compiler allocations.
+
+
+Production Webpack builds use isolated compiler workers and memory optimizations. Do not run the desktop build or a full typecheck concurrently with the image build on a memory-constrained host. Reserve compiler-native memory and temporary swap separately; a 5 GB container limit can still be insufficient even with a 3 GB V8 heap.
 
 ## Recovery
 
@@ -77,5 +84,14 @@ Maintain a written recovery procedure covering:
 - Reapplying secrets and OAuth configuration
 - Reconnecting provider webhooks and watches
 - Validating email processing without sending unintended messages
+
+
+### Mailbox loading
+
+The inbox renders the mail engine's local SQLite cache. Server-side IMAP message mappings alone do not prove that a browser or desktop client has loaded those messages. Inspect the account's `/api/mail/v1/accounts/{accountId}/enumeration` responses and incremental changes when diagnosing an empty view.
+
+New IMAP scans read the highest UID windows first so recent messages appear before older history. Existing ascending checkpoints finish in their original direction before the next scan switches direction. UID gaps can produce empty pages without an authentication failure; do not reconnect a working mailbox solely because an early page is empty.
+
+The All Accounts view registers connected accounts without requiring an individual mailbox visit. A failure in one provider's bootstrap must not prevent another connected mailbox from appearing.
 
 Test the procedure periodically in an isolated environment.

@@ -1,4 +1,5 @@
 import { createMailIpcClient } from "@inboxzero/mail-core/protocol/mail-ipc-client";
+import type { Provider } from "@inboxzero/mail-core/identities";
 import { getInboxZeroDesktopApp } from "@/utils/desktop-app";
 import {
   pageConnectivityOnline,
@@ -15,9 +16,7 @@ export function hasDesktopMailEngineIpc() {
   );
 }
 
-export function createDesktopIpcMailClient(input?: {
-  provider?: "google" | "microsoft";
-}) {
+export function createDesktopIpcMailClient(input?: { provider?: Provider }) {
   const desktop = getInboxZeroDesktopApp();
   const invoke = desktop?.mailEngine;
   const subscribe = desktop?.mailEngineSubscribe;

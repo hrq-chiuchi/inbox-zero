@@ -22,11 +22,16 @@ import {
   EMAIL_ACCOUNT_ID_REQUIRED_ERROR,
   MICROSOFT_AUTH_EXPIRED_ERROR_CODE,
   NO_REFRESH_TOKEN_ERROR_CODE,
+  IMAP_AUTH_REQUIRED_ERROR_CODE,
 } from "@/utils/config";
 import { isAdmin } from "@/utils/admin";
 import prisma from "@/utils/prisma";
 import { createEmailProvider } from "@/utils/email/provider";
 import type { EmailProvider } from "@/utils/email/types";
+import {
+  ImapAuthenticationError,
+  ImapDisconnectedError,
+} from "@/utils/imap/client";
 import { startRequestTimer } from "@/utils/request-timing";
 import {
   type AuditActorType,
@@ -145,6 +150,26 @@ function withMiddleware<T extends NextRequest>(
           const publicApiRequest = isPublicApiPath(
             new URL(requestForError.url).pathname,
           );
+          if (
+            error instanceof ImapAuthenticationError ||
+            error instanceof ImapDisconnectedError
+          ) {
+            if (publicApiRequest) {
+              return publicApiErrorResponse({
+                status: 401,
+                code: "UNAUTHORIZED",
+                message: error.message,
+              });
+            }
+            return NextResponse.json(
+              {
+                error: error.message,
+                errorCode: IMAP_AUTH_REQUIRED_ERROR_CODE,
+                isKnownError: true,
+              },
+              { status: 401 },
+            );
+          }
 
           if (error instanceof SafeError) {
             if (error.message === "No refresh token") {

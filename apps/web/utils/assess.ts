@@ -6,7 +6,10 @@ import { isDefined } from "@/utils/types";
 import type { Logger } from "@/utils/logger";
 import { GmailLabel } from "@/utils/gmail/label";
 
-const DEFAULT_LABEL_COUNT: Record<EmailProvider["name"], number> = {
+const DEFAULT_LABEL_COUNT: Record<
+  Exclude<EmailProvider["name"], "imap">,
+  number
+> = {
   google: 13,
   microsoft: 8,
 };
@@ -63,6 +66,8 @@ async function getLabelThreadCount(client: EmailProvider, labelId: string) {
 
 async function getLabelCount(client: EmailProvider) {
   const labels = await client.getLabels();
+  if (client.name === "imap")
+    return labels.filter((label) => label.type === "user").length;
   return labels.length - DEFAULT_LABEL_COUNT[client.name];
 }
 

@@ -1,4 +1,5 @@
 import { extractDomainFromEmail } from "@/utils/email";
+import { env } from "@/env";
 
 export function createSearchParams(params: Record<string, unknown>) {
   const searchParams = new URLSearchParams();
@@ -128,6 +129,29 @@ const PROVIDER_CONFIG: Record<string, ProviderUrlConfig> = {
     },
   },
   google: GOOGLE_CONFIG,
+  imap: {
+    requiresMessageId: false,
+    buildUrl: (threadId: string, emailAddress?: string | null) => {
+      const url = new URL("/mail", env.NEXT_PUBLIC_BASE_URL);
+      if (emailAddress) url.searchParams.set("accountEmail", emailAddress);
+      url.searchParams.set("thread-id", threadId);
+      return url.toString();
+    },
+    buildDraftUrl: (draft: DraftLinkTarget, emailAddress?: string | null) => {
+      const url = new URL("/mail", env.NEXT_PUBLIC_BASE_URL);
+      if (emailAddress) url.searchParams.set("accountEmail", emailAddress);
+      url.searchParams.set("type", "draft");
+      url.searchParams.set("thread-id", draft.threadId || draft.id);
+      return url.toString();
+    },
+    selectId: (_messageId: string, threadId: string) => threadId,
+    buildSearchUrl: (from: string, emailAddress?: string | null) => {
+      const url = new URL("/mail", env.NEXT_PUBLIC_BASE_URL);
+      if (emailAddress) url.searchParams.set("accountEmail", emailAddress);
+      url.searchParams.set("q", `from:${from}`);
+      return url.toString();
+    },
+  },
   default: {
     ...GOOGLE_CONFIG,
     selectId: (_messageId: string, threadId: string) => threadId,
@@ -227,6 +251,7 @@ export function getGmailSearchUrl(from: string, emailAddress?: string | null) {
 const OPEN_IN_MAILBOX_LABELS: Record<string, string> = {
   google: "Open in Gmail",
   microsoft: "Open in Outlook",
+  imap: "Open in Inbox Zero",
 };
 
 export function getOpenInMailboxLabel(provider?: string | null) {

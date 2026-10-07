@@ -64,6 +64,12 @@ export const MailEngineConnectionBanner = memo(
             <Button
               disabled={reconnecting || !emailAccountId}
               onClick={() => {
+                if (provider === "imap") {
+                  redirectToSafeUrl(
+                    `/accounts?reconnectEmailAccountId=${encodeURIComponent(emailAccountId)}`,
+                  );
+                  return;
+                }
                 setReconnecting(true);
                 getAccountLinkingUrl(
                   isMicrosoftProvider(provider) ? "microsoft" : "google",
