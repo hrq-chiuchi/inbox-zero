@@ -262,6 +262,36 @@ describe("IMAP envelope search", () => {
     expect(release).toHaveBeenCalledTimes(1);
   });
 
+  it("drops a cutoff that is not in the past, which WITHIN servers reject as OLDER 0", async () => {
+    const { mailbox, client } = envelopeFixture();
+    const past = new Date(Date.now() - 7 * 86_400_000);
+    await mailbox.searchEnvelopes({
+      search: {
+        from: "a@example.com",
+        before: new Date(Date.now() + 86_400_000),
+      },
+    });
+    await mailbox.searchEnvelopes({
+      search: { from: "a@example.com", before: past },
+    });
+    prisma.imapSyncSnapshot.create.mockResolvedValue({
+      id: "snapshot",
+      emailAccountId: "account",
+      folderPath: "search",
+      state: { entries: [] },
+      expiresAt: new Date(Date.now() + 30 * 60_000),
+    });
+    await mailbox.fetchMessages({
+      folderId: "INBOX",
+      search: { before: new Date(Date.now() + 86_400_000) },
+    });
+    expect(client.search.mock.calls.map(([search]) => search)).toEqual([
+      { from: "a@example.com", draft: false },
+      { from: "a@example.com", before: past, draft: false },
+      { draft: false },
+    ]);
+  });
+
   it("names the folder when the server rejects the search", async () => {
     const { mailbox, client, release } = envelopeFixture();
     client.search.mockResolvedValue(false);

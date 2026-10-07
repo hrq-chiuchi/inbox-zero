@@ -623,7 +623,7 @@ export class ImapMailbox {
             if (client.mailbox.exists === 0) continue;
             const validity = String(client.mailbox.uidValidity);
             const search = {
-              ...options.search,
+              ...withoutFutureBefore(options.search),
               ...(!options.includeDrafts ? { draft: false } : {}),
             };
             const found = await client.search(
@@ -772,7 +772,7 @@ export class ImapMailbox {
             throw new Error("IMAP folder could not be selected.");
           if (client.mailbox.exists === 0) continue;
           const found = await client.search(
-            { ...options.search, draft: false },
+            { ...withoutFutureBefore(options.search), draft: false },
             { uid: true },
           );
           if (!found)
@@ -979,6 +979,19 @@ export class ImapMailbox {
       }
     });
   }
+}
+
+// On servers with the WITHIN extension imapflow sends BEFORE as "OLDER <seconds ago>".
+// A cutoff that is not in the past becomes "OLDER 0", which the server rejects, and
+// it could not exclude any message anyway.
+function withoutFutureBefore(
+  search: SearchObject | undefined,
+): SearchObject | undefined {
+  if (!search?.before) return search;
+  const cutoff = new Date(search.before).getTime();
+  if (Number.isNaN(cutoff) || cutoff < Date.now() - 1000) return search;
+  const { before: _before, ...rest } = search;
+  return rest;
 }
 
 function inferSpecialUse(
