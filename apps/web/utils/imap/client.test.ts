@@ -185,9 +185,89 @@ describe("IMAP folder search results", () => {
     const { mailbox, client, release } = searchFixture();
     client.search.mockResolvedValue(false);
     await expect(mailbox.fetchMessages({ folderId: "INBOX" })).rejects.toThrow(
-      "IMAP search did not complete.",
+      'IMAP search did not complete in folder "INBOX".',
     );
     expect(release).toHaveBeenCalledTimes(1);
     expect(prisma.imapSyncSnapshot.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("IMAP envelope search", () => {
+  function envelopeFixture() {
+    const result = fixture();
+    const fetch = vi.fn((_uids: number[]) =>
+      (async function* () {
+        yield {
+          uid: 3,
+          internalDate: new Date("2026-06-01T10:00:00Z"),
+          envelope: {
+            from: [{ address: "Alice@Example.com" }],
+            to: [{ address: "owner@example.com" }],
+          },
+        };
+      })(),
+    );
+    Object.assign(result.client, { fetch });
+    return { ...result, fetch };
+  }
+
+  it("returns addresses and dates without downloading message sources", async () => {
+    const { mailbox, client, fetch } = envelopeFixture();
+    client.search.mockResolvedValue([3]);
+    await expect(
+      mailbox.searchEnvelopes({ search: { from: "alice@example.com" } }),
+    ).resolves.toEqual([
+      {
+        folder: "INBOX",
+        uidValidity: "42",
+        uid: 3,
+        internalDate: new Date("2026-06-01T10:00:00Z"),
+        from: ["alice@example.com"],
+        to: ["owner@example.com"],
+      },
+    ]);
+    expect(client.search).toHaveBeenCalledWith(
+      { from: "alice@example.com", draft: false },
+      { uid: true },
+    );
+    expect(fetch).toHaveBeenCalledWith(
+      [3],
+      { envelope: true, internalDate: true, uid: true },
+      { uid: true },
+    );
+    expect(client.fetchOne).not.toHaveBeenCalled();
+  });
+
+  it("skips drafts, excluded roles and empty folders without searching them", async () => {
+    const { mailbox, client, release, fetch } = envelopeFixture();
+    client.list.mockResolvedValue([
+      { path: "INBOX.Drafts", flags: new Set<string>() },
+      { path: "INBOX.Junk", flags: new Set<string>() },
+      { path: "INBOX.Trash", flags: new Set<string>(), specialUse: "\\Trash" },
+      { path: "INBOX.Archive", flags: new Set<string>() },
+    ]);
+    client.mailbox.exists = 0;
+    await expect(
+      mailbox.searchEnvelopes({
+        search: { from: "alice@example.com" },
+        excludeRoles: ["SPAM", "TRASH"],
+      }),
+    ).resolves.toEqual([]);
+    expect(client.getMailboxLock).toHaveBeenCalledTimes(1);
+    expect(client.getMailboxLock).toHaveBeenCalledWith("INBOX.Archive", {
+      readOnly: true,
+    });
+    expect(client.search).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("names the folder when the server rejects the search", async () => {
+    const { mailbox, client, release } = envelopeFixture();
+    client.search.mockResolvedValue(false);
+    await expect(
+      mailbox.searchEnvelopes({ search: { from: "alice@example.com" } }),
+    ).rejects.toThrow('IMAP search did not complete in folder "INBOX".');
+    expect(release).toHaveBeenCalledTimes(1);
   });
 });

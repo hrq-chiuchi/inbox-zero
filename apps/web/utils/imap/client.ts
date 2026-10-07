@@ -36,6 +36,14 @@ export type ImapFolder = {
   total: number;
   unread: number;
 };
+export type ImapEnvelopeMatch = {
+  folder: string;
+  uidValidity: string;
+  uid: number;
+  internalDate: Date;
+  from: string[];
+  to: string[];
+};
 type Mapping = ImapMessage;
 type TestEndpoints = {
   host: "127.0.0.1" | "::1";
@@ -622,7 +630,10 @@ export class ImapMailbox {
               Object.keys(search).length ? search : { all: true },
               { uid: true },
             );
-            if (!found) throw new Error("IMAP search did not complete.");
+            if (!found)
+              throw new Error(
+                `IMAP search did not complete in folder "${folder.path}".`,
+              );
             const requested = options.uids ? new Set(options.uids) : undefined;
             const selected = found
               .filter((uid) => !requested || requested.has(uid))
@@ -723,6 +734,76 @@ export class ImapMailbox {
           ? `imap-page:${snapshotId}:${offset}`
           : undefined,
     };
+  }
+
+  // Server-side search that returns addresses and dates only. Callers that just
+  // need to know whether a correspondent appears must not download message bodies.
+  async searchEnvelopes(options: {
+    search: SearchObject;
+    excludeRoles?: (keyof typeof SPECIAL_ROLES)[];
+    maxPerFolder?: number;
+  }): Promise<ImapEnvelopeMatch[]> {
+    const excluded = new Set<string>(
+      (options.excludeRoles ?? []).map((role) => SPECIAL_ROLES[role]),
+    );
+    const maxPerFolder = Math.min(
+      Math.max(options.maxPerFolder ?? 200, 1),
+      1000,
+    );
+    const addresses = (list: { address?: string }[] | undefined): string[] =>
+      (list ?? []).flatMap((item) =>
+        item.address ? [item.address.toLowerCase()] : [],
+      );
+    return this.withConnection(async (client) => {
+      const result: ImapEnvelopeMatch[] = [];
+      for (const folder of await client.list()) {
+        const role = inferSpecialUse(folder.path, folder.specialUse);
+        if (
+          folder.flags.has("\\Noselect") ||
+          role === SPECIAL_ROLES.DRAFT ||
+          (role && excluded.has(role))
+        )
+          continue;
+        const lock = await client.getMailboxLock(folder.path, {
+          readOnly: true,
+        });
+        try {
+          if (!client.mailbox)
+            throw new Error("IMAP folder could not be selected.");
+          if (client.mailbox.exists === 0) continue;
+          const found = await client.search(
+            { ...options.search, draft: false },
+            { uid: true },
+          );
+          if (!found)
+            throw new Error(
+              `IMAP search did not complete in folder "${folder.path}".`,
+            );
+          const uids = found.sort((a, b) => a - b).slice(0, maxPerFolder);
+          if (!uids.length) continue;
+          const uidValidity = String(client.mailbox.uidValidity);
+          // No other command may run on this connection while the fetch iterates.
+          for await (const message of client.fetch(
+            uids,
+            { envelope: true, internalDate: true, uid: true },
+            { uid: true },
+          )) {
+            if (!message.envelope || !message.internalDate) continue;
+            result.push({
+              folder: folder.path,
+              uidValidity,
+              uid: message.uid,
+              internalDate: new Date(message.internalDate),
+              from: addresses(message.envelope.from),
+              to: addresses(message.envelope.to),
+            });
+          }
+        } finally {
+          lock.release();
+        }
+      }
+      return result;
+    });
   }
 
   private async operateMessages(

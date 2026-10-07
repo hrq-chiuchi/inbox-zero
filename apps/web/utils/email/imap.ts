@@ -44,6 +44,7 @@ import { InvalidMailboxSyncCursorError } from "@/utils/email/mailbox-sync";
 import { normalizeContactCandidates } from "@/utils/email/contact";
 import { extractSignatureFromHtml } from "@/utils/email/signature-extraction";
 import { createScopedLogger } from "@/utils/logger";
+import { getSearchTermForSender } from "@/utils/email";
 import { handlePreviousDraftDeletion } from "@/utils/ai/choose-rule/draft-management";
 
 type CustomLabel = ImapLabel;
@@ -623,20 +624,39 @@ export class ImapProvider implements EmailProvider {
   }) {
     const sender = messageAddresses(options.from)[0];
     if (!sender) throw new Error("Invalid sender address.");
-    const domain = `@${sender.split("@")[1]}`;
-    return (
-      await this.allMessages({
-        search: { before: new Date(options.date.getTime() + 86_400_000) },
-      })
-    ).some(
-      (message) =>
-        message.id !== options.messageId &&
-        receivedTime(message) < options.date.getTime() &&
-        [message.headers.from, message.headers.to].some((header) =>
-          messageAddresses(header).some(
-            (address) => address === sender || address.endsWith(domain),
-          ),
-        ),
+    // Public providers compare by address; an organization's domain counts as one contact.
+    const term = getSearchTermForSender(sender).toLowerCase();
+    const needle = term.includes("@") ? term : `@${term}`;
+    const isMatch = (address: string) =>
+      term.includes("@") ? address === needle : address.endsWith(needle);
+    const [current, matches] = await Promise.all([
+      prisma.imapMessage.findFirst({
+        where: {
+          id: options.messageId,
+          emailAccountId: this.mailbox.emailAccountId,
+        },
+        select: { folderPath: true, uidValidity: true, uid: true },
+      }),
+      // IMAP address search is a substring match, so results are re-checked below.
+      // Junk and trash are skipped: earlier spam is not prior contact.
+      this.mailbox.searchEnvelopes({
+        search: {
+          before: new Date(options.date.getTime() + 86_400_000),
+          or: [{ from: needle }, { to: needle }],
+        },
+        excludeRoles: ["SPAM", "TRASH"],
+      }),
+    ]);
+    return matches.some(
+      (match) =>
+        !(
+          current &&
+          match.folder === current.folderPath &&
+          match.uidValidity === current.uidValidity &&
+          BigInt(match.uid) === current.uid
+        ) &&
+        match.internalDate.getTime() < options.date.getTime() &&
+        [...match.from, ...match.to].some(isMatch),
     );
   }
   isReplyInThread(message: ParsedMessage) {

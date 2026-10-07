@@ -170,6 +170,130 @@ describe("IMAP provider", () => {
     );
   });
 
+  describe("prior contact", () => {
+    const date = new Date("2026-06-10T12:00:00Z");
+    function match(
+      overrides: Partial<
+        Awaited<ReturnType<ImapMailbox["searchEnvelopes"]>>[number]
+      > = {},
+    ) {
+      return {
+        folder: "INBOX",
+        uidValidity: "42",
+        uid: 3,
+        internalDate: new Date("2026-06-01T10:00:00Z"),
+        from: ["bob@acme.test"],
+        to: ["owner@example.com"],
+        ...overrides,
+      };
+    }
+    function priorContactFixture(
+      matches: ReturnType<typeof match>[],
+      current: { folderPath: string; uidValidity: string; uid: bigint } | null,
+    ) {
+      const { mailbox, provider } = fixture();
+      const fetch = vi.spyOn(mailbox, "fetchMessages");
+      const search = vi
+        .spyOn(mailbox, "searchEnvelopes")
+        .mockResolvedValue(matches);
+      prisma.imapMessage.findFirst.mockResolvedValue(current as never);
+      return { provider, fetch, search };
+    }
+
+    it("searches the server for the sender's organization instead of downloading the mailbox", async () => {
+      const { provider, fetch, search } = priorContactFixture([match()], null);
+      await expect(
+        provider.hasPreviousCommunicationsWithSenderOrDomain({
+          from: "Alice <alice@acme.test>",
+          date,
+          messageId: "current",
+        }),
+      ).resolves.toBe(true);
+      expect(fetch).not.toHaveBeenCalled();
+      expect(search).toHaveBeenCalledWith({
+        search: {
+          before: new Date("2026-06-11T12:00:00Z"),
+          or: [{ from: "@acme.test" }, { to: "@acme.test" }],
+        },
+        excludeRoles: ["SPAM", "TRASH"],
+      });
+    });
+
+    it("compares public mail providers by exact address", async () => {
+      const { provider, search } = priorContactFixture(
+        [match({ from: ["someone-else@gmail.com"] })],
+        null,
+      );
+      await expect(
+        provider.hasPreviousCommunicationsWithSenderOrDomain({
+          from: "alice@gmail.com",
+          date,
+          messageId: "current",
+        }),
+      ).resolves.toBe(false);
+      expect(search.mock.calls[0][0].search.or).toEqual([
+        { from: "alice@gmail.com" },
+        { to: "alice@gmail.com" },
+      ]);
+    });
+
+    it("rejects substring hits from a different domain", async () => {
+      const { provider } = priorContactFixture(
+        [match({ from: ["bob@acme.test.example"] })],
+        null,
+      );
+      await expect(
+        provider.hasPreviousCommunicationsWithSenderOrDomain({
+          from: "alice@acme.test",
+          date,
+          messageId: "current",
+        }),
+      ).resolves.toBe(false);
+    });
+
+    it("counts mail the owner sent to the sender", async () => {
+      const { provider } = priorContactFixture(
+        [
+          match({
+            folder: "INBOX.Sent",
+            from: ["owner@example.com"],
+            to: ["alice@acme.test"],
+          }),
+        ],
+        null,
+      );
+      await expect(
+        provider.hasPreviousCommunicationsWithSenderOrDomain({
+          from: "alice@acme.test",
+          date,
+          messageId: "current",
+        }),
+      ).resolves.toBe(true);
+    });
+
+    it("ignores the message itself and anything received later", async () => {
+      const { provider } = priorContactFixture(
+        [
+          match({ uid: 9, internalDate: new Date("2026-06-10T11:59:00Z") }),
+          match({ uid: 10, internalDate: new Date("2026-06-10T12:30:00Z") }),
+        ],
+        { folderPath: "INBOX", uidValidity: "42", uid: 9n },
+      );
+      await expect(
+        provider.hasPreviousCommunicationsWithSenderOrDomain({
+          from: "alice@acme.test",
+          date,
+          messageId: "current",
+        }),
+      ).resolves.toBe(false);
+      expect(prisma.imapMessage.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: "current", emailAccountId: "account" },
+        }),
+      );
+    });
+  });
+
   it("surfaces unsupported filters rather than returning invented server capability", async () => {
     const { provider } = fixture();
     await expect(provider.getFiltersList()).rejects.toThrow("not supported");
