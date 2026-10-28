@@ -18,6 +18,7 @@ import { browserStoragePressure } from "./storage-pressure";
 import { createMailWorkerHost } from "./worker-session";
 import type { BrowserMailEngine } from "./create-browser-engine";
 import { createRoutedBackendAdapter } from "@inboxzero/mail-core/protocol/routed-backend-adapter";
+import { localMailGeneration } from "./account-generation";
 
 const host = createMailWorkerHost({
   createEngine: createWorkerEngine,
@@ -55,7 +56,7 @@ async function createWorkerEngine(
       await store.ensureAccount({
         accountId: account.accountId,
         provider: account.provider,
-        generation: account.generation ?? account.accountId,
+        generation: localMailGeneration(account),
       });
     };
     stage = "account-init";

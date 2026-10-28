@@ -13,6 +13,8 @@ export type ImapSendResult = {
   threadId: string;
   storageWarning?: string;
 };
+export const IMAP_ATTACHMENT_ID_HEADER = "X-Inbox-Zero-Attachment-Id";
+
 const logger = createScopedLogger("imap/smtp");
 
 export class ImapDeliveryError extends Error {
@@ -191,12 +193,21 @@ export async function draftMailOptions(
     inReplyTo: mail.inReplyTo,
     references: mail.references,
     messageId: mail.messageId,
-    attachments: mail.attachments.map((attachment) => ({
-      filename: attachment.filename,
-      content: attachment.content,
-      contentType: attachment.contentType,
-      contentDisposition: attachment.contentDisposition,
-      cid: attachment.cid,
-    })),
+    attachments: mail.attachments.map((attachment) => {
+      const attachmentId = attachment.headers.get(
+        IMAP_ATTACHMENT_ID_HEADER.toLowerCase(),
+      );
+      return {
+        filename: attachment.filename,
+        content: attachment.content,
+        contentType: attachment.contentType,
+        contentDisposition: attachment.contentDisposition,
+        cid: attachment.cid,
+        headers:
+          typeof attachmentId === "string"
+            ? { [IMAP_ATTACHMENT_ID_HEADER]: attachmentId }
+            : undefined,
+      };
+    }),
   };
 }

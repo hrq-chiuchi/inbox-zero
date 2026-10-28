@@ -3,6 +3,7 @@ import type { ParsedMessage } from "@/utils/types";
 import prisma from "@/utils/__mocks__/prisma";
 import { ImapProvider } from "@/utils/email/imap";
 import { ImapMailbox } from "@/utils/imap/client";
+import { parseSource } from "@/utils/imap/message";
 
 vi.mock("@/utils/prisma");
 vi.mock("server-only", () => ({}));
@@ -114,6 +115,62 @@ describe("IMAP provider", () => {
     expect(page.nextPageToken).toBeUndefined();
   });
 
+  it("counts draft messages in the intersection of a folder and custom label", async () => {
+    const { mailbox, provider } = fixture();
+    prisma.imapLabel.findFirst.mockResolvedValue({
+      id: "label-1",
+      emailAccountId: "account",
+      name: "Important",
+      keyword: "iz-important",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const fetch = vi.spyOn(mailbox, "fetchMessages").mockResolvedValue({
+      messages: [
+        message("regular", "alice@example.com"),
+        message("draft", "owner@example.com", { labelIds: ["DRAFT"] }),
+      ],
+    });
+
+    expect(
+      await provider.countMessages({
+        folderId: "Projects",
+        labelId: "label-1",
+      }),
+    ).toBe(2);
+    expect(fetch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        folderId: "Projects",
+        search: { keyword: "iz-important" },
+        includeDrafts: true,
+      }),
+    );
+  });
+
+  it("archives every inbox message from one sender and returns the moved count", async () => {
+    const { mailbox, provider } = fixture();
+    vi.mocked(mailbox.getOrCreateSpecialFolder).mockImplementation(
+      async (role) => role,
+    );
+    vi.spyOn(mailbox, "fetchMessages").mockResolvedValue({
+      messages: [
+        message("match-1", "Alice <alice@example.com>"),
+        message("other", "bob@example.com"),
+        message("match-2", "alice@example.com"),
+      ],
+    });
+    const move = vi.spyOn(mailbox, "moveMessages").mockResolvedValue();
+
+    await expect(
+      provider.bulkArchiveSenderOrThrow(
+        "alice@example.com",
+        "owner@example.com",
+        "account",
+      ),
+    ).resolves.toBe(2);
+    expect(move).toHaveBeenCalledWith(["match-1", "match-2"], "ARCHIVE");
+  });
+
   it("rejects another query's cursor rather than broadening or returning an empty page", async () => {
     const { provider } = fixture();
     prisma.imapSyncSnapshot.findFirst.mockResolvedValue(null);
@@ -170,6 +227,49 @@ describe("IMAP provider", () => {
     );
   });
 
+  it("removes one IMAP draft attachment while preserving the other attachment identity", async () => {
+    const { mailbox, provider } = fixture();
+    const rawDraft = multipartDraft([
+      { id: "remove-id", filename: "remove.txt", content: "remove me" },
+      { id: "keep-id", filename: "keep.txt", content: "keep me" },
+    ]);
+    vi.spyOn(provider, "getDraft").mockResolvedValue(
+      message("draft-1", "owner@example.com", { labelIds: ["DRAFT"] }),
+    );
+    vi.spyOn(mailbox, "getRawMessage").mockResolvedValue(rawDraft);
+    vi.spyOn(mailbox, "resolveMessage")
+      .mockResolvedValueOnce(imapMapping("draft-1", 1n))
+      .mockResolvedValueOnce(imapMapping("replacement", 2n));
+    const append = vi
+      .spyOn(mailbox, "appendMessage")
+      .mockResolvedValue(
+        message("replacement", "owner@example.com", { labelIds: ["DRAFT"] }),
+      );
+    const remove = vi.spyOn(mailbox, "removeMessages").mockResolvedValue();
+    prisma.$transaction.mockResolvedValue([]);
+
+    const result = await provider.removeDraftAttachment("draft-1", "remove-id");
+
+    expect(remove).toHaveBeenCalledWith(["draft-1"]);
+    const rewritten = await parseSource(append.mock.calls[0]![1]);
+    expect(
+      rewritten.attachments.map((attachment) => attachment.filename),
+    ).toEqual(["keep.txt"]);
+    expect(
+      rewritten.attachments[0]?.headers.get("x-inbox-zero-attachment-id"),
+    ).toBe("keep-id");
+    expect(result).toEqual({
+      messageId: "draft-1",
+      attachments: [
+        expect.objectContaining({
+          id: "keep-id",
+          filename: "keep.txt",
+          providerAttachmentId: "0",
+        }),
+      ],
+    });
+  });
+
   it("surfaces unsupported filters rather than returning invented server capability", async () => {
     const { provider } = fixture();
     await expect(provider.getFiltersList()).rejects.toThrow("not supported");
@@ -179,3 +279,46 @@ describe("IMAP provider", () => {
     await expect(provider.watchEmails()).rejects.toThrow("polling");
   });
 });
+
+function multipartDraft(
+  attachments: Array<{ id: string; filename: string; content: string }>,
+) {
+  const boundary = "securo-boundary";
+  const parts = attachments.map(
+    ({ id, filename, content }) => `--${boundary}\r
+Content-Type: text/plain; name="${filename}"\r
+Content-Disposition: attachment; filename="${filename}"\r
+Content-Transfer-Encoding: base64\r
+X-Inbox-Zero-Attachment-Id: ${id}\r
+\r
+${Buffer.from(content).toString("base64")}\r
+`,
+  );
+  return Buffer.from(`From: owner@example.com\r
+To: recipient@example.com\r
+Subject: Draft\r
+MIME-Version: 1.0\r
+Content-Type: multipart/mixed; boundary="${boundary}"\r
+\r
+--${boundary}\r
+Content-Type: text/plain; charset=utf-8\r
+\r
+Draft body\r
+${parts.join("")}--${boundary}--\r
+`);
+}
+
+function imapMapping(id: string, uid: bigint) {
+  return {
+    id,
+    emailAccountId: "account",
+    folderPath: "Drafts",
+    uidValidity: "42",
+    uid,
+    rfcMessageId: `<${id}@example.com>`,
+    threadId: "draft-thread",
+    flags: ["\\Draft"],
+    internalDate: new Date("2026-06-10T12:00:00Z"),
+    deleted: false,
+  };
+}

@@ -6,6 +6,8 @@ import prisma from "@/utils/prisma";
 import type { ImapLabel } from "@/generated/prisma/client";
 import type { ParsedMessage } from "@/utils/types";
 import type {
+  DraftAttachment,
+  DraftAttachmentsResult,
   EmailProvider,
   EmailThread,
   EmailLabel,
@@ -36,6 +38,7 @@ import {
 import {
   composeImapMail,
   draftMailOptions,
+  IMAP_ATTACHMENT_ID_HEADER,
   replyMailOptions,
   sendImapMail,
 } from "@/utils/imap/mail";
@@ -45,6 +48,7 @@ import { normalizeContactCandidates } from "@/utils/email/contact";
 import { extractSignatureFromHtml } from "@/utils/email/signature-extraction";
 import { createScopedLogger } from "@/utils/logger";
 import { handlePreviousDraftDeletion } from "@/utils/ai/choose-rule/draft-management";
+import { assertDraftAttachmentLimits } from "@/utils/email/draft-attachment-upload";
 
 type CustomLabel = ImapLabel;
 type PageOptions = { maxResults?: number; pageToken?: string };
@@ -104,6 +108,33 @@ export class ImapProvider implements EmailProvider {
       pageToken = page.nextPageToken;
     } while (pageToken);
     return messages.sort((a, b) => receivedTime(b) - receivedTime(a));
+  }
+  async countMessages({
+    folderId,
+    labelId,
+  }: {
+    folderId?: string;
+    labelId?: string;
+  }) {
+    let search: SearchObject | undefined;
+    if (labelId === "UNREAD") {
+      search = { seen: false };
+    } else if (labelId && Object.hasOwn(SPECIAL_ROLES, labelId)) {
+      const roleFolder = await this.mailbox.getOrCreateSpecialFolder(
+        labelId as Parameters<ImapMailbox["getOrCreateSpecialFolder"]>[0],
+      );
+      if (folderId && folderId !== roleFolder) return 0;
+      folderId = roleFolder;
+    } else if (labelId) {
+      search = { keyword: (await this.customLabel(labelId)).keyword };
+    }
+    return (
+      await this.allMessages({
+        folderId,
+        search,
+        includeDrafts: true,
+      })
+    ).length;
   }
 
   private async pageIds(
@@ -187,6 +218,9 @@ export class ImapProvider implements EmailProvider {
 
   getMessage(messageId: string) {
     return this.mailbox.getMessage(messageId);
+  }
+  getMessageSource(messageId: string) {
+    return this.mailbox.getRawMessage(messageId);
   }
   async getMessagesBatch(messageIds: string[]) {
     return Promise.all(messageIds.map((id) => this.getMessage(id)));
@@ -793,10 +827,10 @@ export class ImapProvider implements EmailProvider {
     await this.mailbox.withConnection(async (client) => {
       const lock = await client.getMailboxLock("INBOX");
       try {
-        if (
-          client.mailbox?.permanentFlags &&
-          !client.mailbox.permanentFlags.has("\\*")
-        )
+        const permanentFlags = client.mailbox
+          ? client.mailbox.permanentFlags
+          : undefined;
+        if (permanentFlags && !permanentFlags.has("\\*"))
           throw new ImapCapabilityError("Custom keyword labels");
       } finally {
         lock.release();
@@ -947,6 +981,21 @@ export class ImapProvider implements EmailProvider {
         )
         .map((message) => message.id),
     );
+  }
+  async bulkArchiveSenderOrThrow(
+    fromEmail: string,
+    _ownerEmail: string,
+    emailAccountId: string,
+  ) {
+    if (emailAccountId !== this.mailbox.emailAccountId)
+      throw new Error("Mailbox account mismatch.");
+    const messages = (
+      await this.allMessages({
+        folderId: await this.mailbox.getOrCreateSpecialFolder("INBOX"),
+      })
+    ).filter((message) => matchesSender(message, fromEmail));
+    await this.archiveMessages(messages.map((message) => message.id));
+    return messages.length;
   }
   async bulkTrashFromSenders(
     fromEmails: string[],
@@ -1149,14 +1198,89 @@ export class ImapProvider implements EmailProvider {
     await this.mailbox.removeMessages([draftId]);
     return true;
   }
+  async getDraftAttachments(
+    draftId: string,
+  ): Promise<DraftAttachmentsResult | null> {
+    if (!(await this.getDraft(draftId))) return null;
+    return readImapDraftAttachments(this.mailbox, draftId);
+  }
+  async addDraftAttachment(
+    draftId: string,
+    attachment: Parameters<EmailProvider["addDraftAttachment"]>[1],
+  ) {
+    const current = await this.getDraftAttachments(draftId);
+    if (!current) throw new ImapMessageNotFoundError();
+    assertDraftAttachmentLimits(current.attachments, attachment.size);
+    const old = await draftMailOptions(this.mailbox, draftId);
+    const oldAttachments = old.attachments ?? [];
+    await this.replaceDraft(draftId, {
+      ...old,
+      attachments: [
+        ...oldAttachments,
+        {
+          filename: attachment.filename,
+          content: attachment.content,
+          contentType: attachment.mimeType,
+          contentDisposition: attachment.disposition,
+          cid: attachment.contentId,
+          headers: { [IMAP_ATTACHMENT_ID_HEADER]: attachment.id },
+        },
+      ],
+    });
+    return {
+      messageId: draftId,
+      attachments: [
+        ...current.attachments,
+        {
+          id: attachment.id,
+          filename: attachment.filename,
+          mimeType: attachment.mimeType,
+          size: attachment.size,
+          disposition: attachment.disposition,
+          contentId: attachment.contentId,
+          messageId: draftId,
+          providerAttachmentId: String(oldAttachments.length),
+        },
+      ],
+      attachmentId: attachment.id,
+    };
+  }
+  async removeDraftAttachment(draftId: string, attachmentId: string) {
+    const current = await this.getDraftAttachments(draftId);
+    if (!current) throw new ImapMessageNotFoundError();
+    const removed = current.attachments.find(
+      (attachment) => attachment.id === attachmentId,
+    );
+    if (!removed) throw new Error("Attachment not found.");
+    const removedIndex = Number(removed.providerAttachmentId);
+    const old = await draftMailOptions(this.mailbox, draftId);
+    await this.replaceDraft(draftId, {
+      ...old,
+      attachments: (old.attachments ?? []).filter(
+        (_attachment, index) => index !== removedIndex,
+      ),
+    });
+    return {
+      messageId: draftId,
+      attachments: current.attachments
+        .filter((_attachment, index) => index !== removedIndex)
+        .map((attachment, index) => ({
+          ...attachment,
+          providerAttachmentId: String(index),
+        })),
+    };
+  }
+  async startDraftAttachmentUpload(): Promise<never> {
+    throw new ImapCapabilityError("Resumable draft attachment uploads");
+  }
+
   async updateDraft(
     draftId: string,
     params: Parameters<EmailProvider["updateDraft"]>[1],
   ) {
     if (!(await this.getDraft(draftId))) throw new ImapMessageNotFoundError();
-    const oldMapping = await this.mailbox.resolveMessage(draftId);
     const old = await draftMailOptions(this.mailbox, draftId);
-    const replacement = await this.appendDraft({
+    await this.replaceDraft(draftId, {
       ...old,
       html: params.messageHtml ?? old.html,
       text: params.messageHtml !== undefined ? undefined : old.text,
@@ -1164,11 +1288,12 @@ export class ImapProvider implements EmailProvider {
       to: params.to ?? old.to,
       cc: params.cc ?? old.cc,
       bcc: params.bcc ?? old.bcc,
-      attachments:
-        params.attachments !== undefined
-          ? toMailerAttachments(params.attachments)
-          : old.attachments,
+      attachments: old.attachments,
     });
+  }
+  private async replaceDraft(draftId: string, options: Mail.Options) {
+    const oldMapping = await this.mailbox.resolveMessage(draftId);
+    const replacement = await this.appendDraft(options);
     const newMapping = await this.mailbox.resolveMessage(replacement.id);
     await this.mailbox.removeMessages([draftId]);
     // APPEND replacement first; transfer the persistent app identity only after selective deletion succeeds.
@@ -1447,6 +1572,41 @@ export class ImapProvider implements EmailProvider {
       "Push subscriptions; this mailbox uses server-side polling",
     );
   }
+  async getContactPhotos() {
+    return {};
+  }
+  async getSendAsAddresses() {
+    return [];
+  }
+}
+
+async function readImapDraftAttachments(
+  mailbox: ImapMailbox,
+  draftId: string,
+): Promise<DraftAttachmentsResult> {
+  const mail = await parseSource(await mailbox.getRawMessage(draftId));
+  return {
+    messageId: draftId,
+    attachments: mail.attachments.map((attachment, index): DraftAttachment => {
+      const storedId = attachment.headers.get(
+        IMAP_ATTACHMENT_ID_HEADER.toLowerCase(),
+      );
+      return {
+        id:
+          typeof storedId === "string" && /^[\w-]{1,64}$/u.test(storedId)
+            ? storedId
+            : attachment.checksum,
+        filename: attachment.filename ?? `attachment-${index + 1}`,
+        mimeType: attachment.contentType,
+        size: attachment.size,
+        disposition:
+          attachment.contentDisposition === "inline" ? "inline" : "attachment",
+        contentId: attachment.cid,
+        messageId: draftId,
+        providerAttachmentId: String(index),
+      };
+    }),
+  };
 }
 
 function groupThreads(messages: ParsedMessage[]): EmailThread[] {

@@ -36,6 +36,12 @@ export type ImapFolder = {
   total: number;
   unread: number;
 };
+function hasMessageSource(
+  message: FetchMessageObject | false,
+): message is FetchMessageObject & { source: Buffer } {
+  return message ? message.source !== undefined : false;
+}
+
 type Mapping = ImapMessage;
 type TestEndpoints = {
   host: "127.0.0.1" | "::1";
@@ -348,7 +354,7 @@ export class ImapMailbox {
         const message = await client.fetchOne(Number(mapping.uid), FULL_FETCH, {
           uid: true,
         });
-        if (!message?.source) {
+        if (!hasMessageSource(message)) {
           await prisma.imapMessage.updateMany({
             where: { id: mapping.id, emailAccountId: this.emailAccountId },
             data: { deleted: true },
@@ -371,7 +377,7 @@ export class ImapMailbox {
         const message = await client.fetchOne(Number(mapping.uid), FULL_FETCH, {
           uid: true,
         });
-        if (!message?.source) {
+        if (!hasMessageSource(message)) {
           await prisma.imapMessage.updateMany({
             where: { id: mapping.id, emailAccountId: this.emailAccountId },
             data: { deleted: true },
@@ -701,7 +707,7 @@ export class ImapMailbox {
           const message = await client.fetchOne(entry.uid, FULL_FETCH, {
             uid: true,
           });
-          if (message?.source)
+          if (hasMessageSource(message))
             result.push(
               await this.rememberMessage(
                 entry.folder,
@@ -772,7 +778,7 @@ export class ImapMailbox {
         folderPath,
         { uid: true },
       );
-      if (!result?.uidValidity || !result.uidMap)
+      if (result === false || !result.uidValidity || !result.uidMap)
         throw new Error(
           "Move completed without a UID mapping. Refresh the mailbox; do not retry the move.",
         );
@@ -801,12 +807,15 @@ export class ImapMailbox {
   ): Promise<void> {
     await this.operateMessages(messageIds, async (client, mappings) => {
       const uids = mappings.map((mapping) => Number(mapping.uid));
-      if (client.mailbox?.permanentFlags)
+      const permanentFlags = client.mailbox
+        ? client.mailbox.permanentFlags
+        : undefined;
+      if (permanentFlags)
         for (const flag of flags) {
           if (
             !flag.startsWith("\\") &&
-            !client.mailbox.permanentFlags.has("\\*") &&
-            !client.mailbox.permanentFlags.has(flag)
+            !permanentFlags.has("\\*") &&
+            !permanentFlags.has(flag)
           )
             throw new ImapCapabilityError("Custom keyword labels");
         }
@@ -876,14 +885,14 @@ export class ImapMailbox {
             { uid: `${beforeUid}:*`, header: { "message-id": mail.messageId } },
             { uid: true },
           );
-          if (found?.length !== 1)
+          if (!Array.isArray(found) || found.length !== 1)
             throw new Error(
               "APPEND accepted but identity is ambiguous. Do not retry.",
             );
           uid = found[0];
         }
         const message = await client.fetchOne(uid, FULL_FETCH, { uid: true });
-        if (!message?.source)
+        if (!hasMessageSource(message))
           throw new Error(
             "APPEND accepted but message could not be read. Do not retry.",
           );
