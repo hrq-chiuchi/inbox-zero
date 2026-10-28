@@ -1,6 +1,7 @@
 "use client";
 
 import { memo, useMemo, type Ref } from "react";
+import { PaperclipIcon } from "lucide-react";
 import { MailThreadRow } from "@inboxzero/mail-ui/MailThreadRow";
 import { isThreadStarred } from "@/app/(app)/[emailAccountId]/mail/star-state";
 import { MailLabelChip } from "@/app/(app)/[emailAccountId]/mail/MailLabelChip";
@@ -10,7 +11,6 @@ import type {
   ListThread,
   MailLayoutMode,
 } from "@/app/(app)/[emailAccountId]/mail/types";
-import { EmailDate } from "@/components/email-list/EmailDate";
 import { SentMessageOpenStatus } from "@/components/email-list/SentMessageOpenStatus";
 import { getEmailThreadLabels } from "@/components/EmailMessageCellLabels";
 import { Tooltip } from "@/components/Tooltip";
@@ -23,9 +23,10 @@ import {
 } from "@/components/ui/avatar";
 import type { EmailLabels } from "@/providers/email-label-types";
 import { cn } from "@/utils";
-import { internalDateToDate } from "@/utils/date";
+import { formatShortDate, internalDateToDate } from "@/utils/date";
 import { decodeSnippet } from "@/utils/gmail/decode";
 import { GmailLabel } from "@/utils/gmail/label";
+import { getConversationSubject } from "@/utils/email/subject";
 
 export type ThreadRowProps = {
   thread: ListThread;
@@ -97,6 +98,9 @@ export const ThreadRow = memo(function ThreadRow({
   const isDraft = thread.messages.some((message) =>
     message.labelIds?.includes(GmailLabel.DRAFT),
   );
+  const hasAttachment = thread.messages.some(
+    (message) => message.hasAttachment,
+  );
 
   return (
     <MailThreadRow
@@ -104,13 +108,23 @@ export const ThreadRow = memo(function ThreadRow({
       compact={compact}
       date={
         <div className="flex items-center justify-end gap-1.5">
+          {hasAttachment ? (
+            <>
+              <PaperclipIcon
+                aria-hidden
+                className="size-3.5 shrink-0 text-muted-foreground"
+              />
+              <span className="sr-only">Has attachment</span>
+            </>
+          ) : null}
           {sentMessageOpen ? (
             <SentMessageOpenStatus compact open={sentMessageOpen} />
           ) : null}
-          <EmailDate
-            className="font-normal text-xs"
-            date={internalDateToDate(message.internalDate)}
-          />
+          <span className="text-muted-foreground text-xs">
+            {formatShortDate(internalDateToDate(message.internalDate), {
+              lowercase: true,
+            })}
+          </span>
         </div>
       }
       expandedPreview={expandedPreview}
@@ -150,7 +164,7 @@ export const ThreadRow = memo(function ThreadRow({
       rowRef={rowRef}
       selectionEnabled={selectionEnabled}
       snippet={decodeSnippet(thread.snippet || message.snippet)}
-      subject={message.headers.subject}
+      subject={getConversationSubject(thread.messages)}
     />
   );
 });

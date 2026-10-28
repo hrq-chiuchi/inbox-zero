@@ -7,11 +7,13 @@ export const NO_REFRESH_TOKEN_ERROR_CODE = "NO_REFRESH_TOKEN";
 export const MICROSOFT_AUTH_EXPIRED_ERROR_CODE = "MICROSOFT_AUTH_EXPIRED";
 export const IMAP_AUTH_REQUIRED_ERROR_CODE = "IMAP_AUTH_REQUIRED";
 
-export const userMinCount = "20,000";
+export const userMinCount = "25,000";
 export const userCount = `${userMinCount}+`;
 
 export const KNOWLEDGE_BASIC_MAX_ITEMS = 1;
 export const KNOWLEDGE_BASIC_MAX_CHARS = 2000;
+export const DRAFT_DOCS_BASIC_MAX_URLS = 1;
+export const DRAFT_DOCS_MAX_URLS = 5;
 
 export const ConditionType = {
   AI: "AI",
@@ -24,6 +26,8 @@ export type ConditionType = (typeof ConditionType)[keyof typeof ConditionType];
 export type CoreConditionType = Extract<ConditionType, "AI" | "STATIC">;
 
 export const WELCOME_PATH = "/welcome-redirect";
+export const MAIL_CLIENT_WELCOME_PATH = `${WELCOME_PATH}?mode=mail`;
+export const MAIL_CLIENT_SIGNUP_PATH = `/login?next=${encodeURIComponent(MAIL_CLIENT_WELCOME_PATH)}`;
 
 export const EXTENSION_URL = "https://go.getinboxzero.com/extension";
 

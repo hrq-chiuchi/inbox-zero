@@ -9,18 +9,31 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
+import { AlertCircle } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
+  Empty,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+  EmptyDescription,
+} from "@/components/ui/empty";
+import { holdMailEngineOwner } from "./owner-lock";
+import { reportMailEngineStartupFailure } from "./startup-failure";
+import type { MailEngineStartupStage } from "./startup-error";
 import { usePathname } from "next/navigation";
-import type { MailClient, WorkAdmission } from "@inboxzero/mail-core/engine";
+import type { MailClient } from "@inboxzero/mail-core/engine";
 import { MailEngineProvider } from "@inboxzero/mail-react/MailEngineProvider";
 import { LoadingContent } from "@/components/LoadingContent";
 import { env } from "@/env";
+import { getInboxZeroDesktopApp } from "@/utils/desktop-app";
 import { useAccount } from "@/providers/EmailAccountProvider";
 import {
   createBrowserMailEngine,
   type BrowserMailEngine,
 } from "@/utils/mail-engine/create-browser-engine";
 import {
-  createDesktopIpcMailClient,
+  startDesktopIpcMailClient,
   hasDesktopMailEngineIpc,
 } from "@/utils/mail-engine/desktop-ipc";
 import {
@@ -36,7 +49,6 @@ import type { GetEmailAccountsResponse } from "@/app/api/user/email-accounts/rou
 import { followMailboxChanges } from "@/utils/mail-engine/follow-mailbox-changes";
 import { browserMailEngineCapabilities } from "@/utils/mail-engine/worker-protocol";
 import {
-  MAIL_ENGINE_OWNER_LOCK,
   MAIL_ENGINE_TAB_CHANNEL,
   bindTabMailOwner,
   createBroadcastTabBus,
@@ -51,7 +63,8 @@ import {
 type MailEngineRuntimeStatus = {
   client: MailClient | null;
   mounted: boolean;
-  unavailable: boolean;
+  failed: boolean;
+  retry: () => void;
   requestBrowserEngine: () => void;
 };
 
@@ -60,7 +73,8 @@ type MailEngineInspectTransport = "browser" | "desktop-ipc";
 const MailEngineRuntimeStatusContext = createContext<MailEngineRuntimeStatus>({
   client: null,
   mounted: false,
-  unavailable: false,
+  failed: false,
+  retry: () => {},
   requestBrowserEngine: () => {},
 });
 
@@ -98,13 +112,32 @@ export function MailCoverageGate({ children }: { children: ReactNode }) {
   }
   const mode = selectMailEngineRuntimeMode({
     desktopIpc: hasDesktopMailEngineIpc(),
-    opfs: browserMailEngineCapabilities().opfs,
+    ...browserMailEngineCapabilities(),
   });
-  if (status.unavailable || mode === "unavailable") {
+  if (status.failed || mode === "unavailable") {
     return (
-      <div className="flex flex-1 items-center justify-center p-6 text-muted-foreground text-sm">
-        Mail needs persistent browser storage.
-      </div>
+      <Empty role="alert">
+        <EmptyHeader>
+          <EmptyMedia variant="icon" className="bg-destructive/10">
+            <AlertCircle className="text-destructive" />
+          </EmptyMedia>
+          <EmptyTitle>
+            {status.failed
+              ? "Mail couldn’t start"
+              : "This browser doesn’t support Mail"}
+          </EmptyTitle>
+          <EmptyDescription>
+            {status.failed
+              ? "Try again. If this continues, use a non-private window and an up-to-date browser."
+              : "Mail requires a browser with persistent file storage (OPFS) and web workers. Use an up-to-date browser in a non-private window."}
+          </EmptyDescription>
+        </EmptyHeader>
+        {status.failed && (
+          <Button variant="outline" onClick={status.retry}>
+            Retry
+          </Button>
+        )}
+      </Empty>
     );
   }
   if (!status.client) {
@@ -129,168 +162,150 @@ function MailEngineRuntimeInner({ children }: { children: ReactNode }) {
     browserRequested,
   });
   const [client, setClient] = useState<MailClient | null>(null);
-  const [unavailable, setUnavailable] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const retry = useCallback(() => {
+    setFailed(false);
+    setAttempt((value) => value + 1);
+  }, []);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Retry must tear down the previous attempt and start a new engine.
   useEffect(() => {
-    if (!emailAccountId || !enabled) {
-      setUnavailable(false);
+    if (!emailAccountId || !provider || !enabled) {
+      setFailed(false);
       return;
     }
     // Keep queued sends and undo working after the initiating page or composer closes.
     if (!desktopIpc) requestBrowserEngine();
-    setUnavailable(false);
-    const mode = selectMailEngineRuntimeMode({
-      desktopIpc,
-      opfs: browserMailEngineCapabilities().opfs,
-    });
+    setFailed(false);
+    const capabilities = browserMailEngineCapabilities();
+    const mode = selectMailEngineRuntimeMode({ desktopIpc, ...capabilities });
     if (mode === "unavailable") {
-      setUnavailable(true);
       return;
     }
     const parsedProvider = providerSchema.safeParse(provider);
     if (!parsedProvider.success) {
-      setUnavailable(true);
+      setFailed(true);
       return;
     }
     const mailProvider = parsedProvider.data;
     const abort = new AbortController();
     let published: MailClient | undefined;
     let unsubscribeAccounts: (() => void) | undefined;
+    let stage: MailEngineStartupStage =
+      mode === "desktop-ipc" ? "desktop-client" : "owner-lock";
+    function fail(error: unknown) {
+      if (abort.signal.aborted) return;
+      setFailed(true);
+      report(error, stage);
+    }
+
+    function report(error: unknown, stage: MailEngineStartupStage) {
+      if (abort.signal.aborted) return;
+      reportMailEngineStartupFailure(error, {
+        runtimeMode: mode,
+        platform: getInboxZeroDesktopApp() ? "desktop" : "web",
+        capabilities,
+        stage,
+      });
+    }
 
     async function publishClient(
       next: MailClient,
       role: "owner" | "follower",
       transport: MailEngineInspectTransport,
-      ensureAccount: (account: {
+      ensureAccount?: (account: {
         accountId: string;
         provider: Provider;
       }) => Promise<void>,
     ) {
       if (abort.signal.aborted) return;
+      stage = "publish-client";
       if (published && published !== next) disposeTabFollowerClient(published);
       published = next;
-      const registered = new Map<string, Provider>([
-        [emailAccountId, mailProvider],
-      ]);
-      let reconciliation = Promise.resolve();
-      const reconcileAccounts = ({
-        emailAccounts,
-      }: GetEmailAccountsResponse) => {
-        reconciliation = reconciliation
-          .then(async () => {
-            if (abort.signal.aborted || emailAccounts.length === 0) return;
-            // Preserve the open account for org admins viewing a member's mail.
-            await next.retainAccounts([
-              emailAccountId,
-              ...emailAccounts.map((account) => account.id),
-            ]);
-            if (abort.signal.aborted) return;
-            const connected = new Set([emailAccountId]);
-            const added: string[] = [];
-            await Promise.all(
-              emailAccounts.map(async (account) => {
-                if (account.account.disconnectedAt !== null) return;
-                const parsed = providerSchema.safeParse(
-                  account.account.provider,
-                );
-                if (!parsed.success) return;
-                connected.add(account.id);
-                if (registered.get(account.id) === parsed.data) return;
-                try {
-                  await ensureAccount({
-                    accountId: account.id,
-                    provider: parsed.data,
-                  });
-                  registered.set(account.id, parsed.data);
-                  added.push(account.id);
-                } catch {
-                  // A failed account must not block the other combined rows.
-                }
-              }),
-            );
-            for (const accountId of registered.keys()) {
-              if (!connected.has(accountId)) registered.delete(accountId);
-            }
-            if (
-              added.length &&
-              transport === "browser" &&
-              !abort.signal.aborted
-            ) {
-              await next.requestSync(added);
-            }
-          })
+      if (ensureAccount) {
+        const registered = new Map<string, Provider>([
+          [emailAccountId, mailProvider],
+        ]);
+        let reconciliation = Promise.resolve();
+        const reconcileAccounts = ({
+          emailAccounts,
+        }: GetEmailAccountsResponse) => {
+          reconciliation = reconciliation
+            .then(async () => {
+              if (abort.signal.aborted || emailAccounts.length === 0) return;
+              // Preserve the open account for org admins viewing a member's mail.
+              await next.retainAccounts([
+                emailAccountId,
+                ...emailAccounts.map((account) => account.id),
+              ]);
+              if (abort.signal.aborted) return;
+              const connected = new Set([emailAccountId]);
+              const added: string[] = [];
+              await Promise.all(
+                emailAccounts.map(async (account) => {
+                  if (account.account.disconnectedAt !== null) return;
+                  const parsed = providerSchema.safeParse(
+                    account.account.provider,
+                  );
+                  if (!parsed.success) return;
+                  connected.add(account.id);
+                  if (registered.get(account.id) === parsed.data) return;
+                  try {
+                    await ensureAccount({
+                      accountId: account.id,
+                      provider: parsed.data,
+                    });
+                    registered.set(account.id, parsed.data);
+                    added.push(account.id);
+                  } catch {
+                    // A failed account must not block the other combined rows.
+                  }
+                }),
+              );
+              for (const accountId of registered.keys()) {
+                if (!connected.has(accountId)) registered.delete(accountId);
+              }
+              if (
+                added.length &&
+                transport === "browser" &&
+                !abort.signal.aborted
+              ) {
+                await next.requestSync(added);
+              }
+            })
+            .catch(() => undefined);
+          return reconciliation;
+        };
+        // Register before publishing: combined consumers can request sync as soon
+        // as the client is available, even without visiting each account's route.
+        await fetchEmailAccounts()
+          .then(reconcileAccounts)
           .catch(() => undefined);
-        return reconciliation;
-      };
-      // Register before publishing: combined consumers can request sync as soon
-      // as the client is available, even without visiting each account's route.
-      await fetchEmailAccounts()
-        .then(reconcileAccounts)
-        .catch(() => undefined);
-      if (abort.signal.aborted) return;
-      unsubscribeAccounts?.();
-      unsubscribeAccounts = subscribeEmailAccounts((accounts) => {
-        reconcileAccounts(accounts).catch(() => undefined);
-      });
+        if (abort.signal.aborted) return;
+        unsubscribeAccounts?.();
+        unsubscribeAccounts = subscribeEmailAccounts((accounts) => {
+          reconcileAccounts(accounts).catch(() => undefined);
+        });
+      }
       publishMailEngineInspect(next, emailAccountId, role, transport);
       setActiveMailClient(next);
+      setFailed(false);
       setClient(next);
     }
 
     if (mode === "desktop-ipc") {
-      const client = createDesktopIpcMailClient({ provider: mailProvider });
-      const providers = new Map<string, Provider>([
-        [emailAccountId, mailProvider],
-      ]);
-      const providerClients = new Map<Provider, MailClient>([
-        [mailProvider, { ...client }],
-      ]);
-      const clientForProvider = (accountProvider: Provider) => {
-        let providerClient = providerClients.get(accountProvider);
-        if (!providerClient) {
-          providerClient = createDesktopIpcMailClient({
-            provider: accountProvider,
-          });
-          providerClients.set(accountProvider, providerClient);
-        }
-        return providerClient;
-      };
-      client.requestSync = async (accountIds): Promise<WorkAdmission> => {
-        const grouped = new Map<Provider, string[]>();
-        for (const accountId of accountIds) {
-          const accountProvider = providers.get(accountId) ?? mailProvider;
-          const ids = grouped.get(accountProvider) ?? [];
-          ids.push(accountId);
-          grouped.set(accountProvider, ids);
-        }
-        const admissions = await Promise.all(
-          [...grouped].map(([accountProvider, ids]) =>
-            clientForProvider(accountProvider).requestSync(ids),
-          ),
-        );
-        return (
-          admissions.find((admission) => admission.status === "rejected") ??
-          admissions[0] ?? { status: "already_satisfied" }
-        );
-      };
-      publishClient(client, "owner", "desktop-ipc", async (account) => {
-        // The installed main process registers through requestSync's provider.
-        providers.set(account.accountId, account.provider);
-        await clientForProvider(account.provider).requestSync([
-          account.accountId,
-        ]);
-      }).catch(() => {
-        if (!abort.signal.aborted) setUnavailable(true);
-      });
-      client.requestSync([emailAccountId]).catch(() => undefined);
+      startDesktopIpcMailClient({
+        provider: mailProvider,
+        accountId: emailAccountId,
+        publish: (client) => publishClient(client, "owner", "desktop-ipc"),
+        onSyncError: (error) => report(error, "desktop-sync"),
+      }).catch(fail);
       const unsubscribeLogout = subscribeMailEngineLogout(() => abort.abort());
       return () => {
         unsubscribeLogout();
         unsubscribeAccounts?.();
         abort.abort();
-        for (const providerClient of providerClients.values()) {
-          providerClient.close?.().catch(() => undefined);
-        }
         if (published) disposeTabFollowerClient(published);
         clearMailEngineInspect();
         setActiveMailClient(null);
@@ -301,10 +316,16 @@ function MailEngineRuntimeInner({ children }: { children: ReactNode }) {
     let engine: BrowserMailEngine | undefined;
     let unbindOwner: (() => void) | undefined;
     let unbindHello: (() => void) | undefined;
-    const channel =
-      typeof BroadcastChannel !== "undefined"
-        ? new BroadcastChannel(MAIL_ENGINE_TAB_CHANNEL)
-        : null;
+    let channel: BroadcastChannel | null = null;
+    stage = "tab-channel";
+    try {
+      if (typeof BroadcastChannel !== "undefined") {
+        channel = new BroadcastChannel(MAIL_ENGINE_TAB_CHANNEL);
+      }
+    } catch (error) {
+      fail(error);
+      return;
+    }
     const bus = channel ? createBroadcastTabBus(channel) : null;
 
     if (bus) {
@@ -335,7 +356,7 @@ function MailEngineRuntimeInner({ children }: { children: ReactNode }) {
           "follower",
           "browser",
           follower.ensureAccount,
-        ).catch(() => undefined);
+        ).catch(fail);
       });
       bus.post({
         type: "hello",
@@ -344,26 +365,16 @@ function MailEngineRuntimeInner({ children }: { children: ReactNode }) {
       });
     }
 
-    async function hold(create: () => Promise<void>) {
-      await create();
-      await new Promise<void>((resolve) => {
-        if (abort.signal.aborted) {
-          resolve();
-          return;
-        }
-        abort.signal.addEventListener("abort", () => resolve(), { once: true });
-      });
-    }
-
     async function start() {
+      stage = "owner-lock";
       const create = async () => {
+        stage = "browser-start";
         engine = await createBrowserMailEngine({
           accountId: emailAccountId,
           provider: mailProvider,
           online: typeof navigator === "undefined" || navigator.onLine,
         });
         if (abort.signal.aborted) {
-          await engine.close();
           return;
         }
         if (bus) {
@@ -373,28 +384,23 @@ function MailEngineRuntimeInner({ children }: { children: ReactNode }) {
             ensureAccount: engine.ensureAccount,
           });
           bus.post({ type: "ready" });
-          bus.post({ type: "owner", accountId: emailAccountId });
         }
         await publishClient(engine, "owner", "browser", engine.ensureAccount);
       };
-      if (typeof navigator !== "undefined" && navigator.locks?.request) {
-        await navigator.locks.request(
-          MAIL_ENGINE_OWNER_LOCK,
-          { signal: abort.signal },
-          () => hold(create),
-        );
-        return;
-      }
-      await hold(create);
+      await holdMailEngineOwner({
+        signal: abort.signal,
+        start: create,
+        close: async () => {
+          unbindOwner?.();
+          await engine?.close().catch(() => undefined);
+        },
+      });
     }
 
-    start().catch(() => {
-      if (!abort.signal.aborted) setUnavailable(true);
-    });
+    start().catch(fail);
 
     const unsubscribeLogout = subscribeMailEngineLogout(() => {
       abort.abort();
-      engine?.close().catch(() => undefined);
     });
 
     return () => {
@@ -407,10 +413,16 @@ function MailEngineRuntimeInner({ children }: { children: ReactNode }) {
       clearMailEngineInspect();
       setActiveMailClient(null);
       channel?.close();
-      engine?.close().catch(() => undefined);
       setClient(null);
     };
-  }, [emailAccountId, provider, enabled, desktopIpc, requestBrowserEngine]);
+  }, [
+    emailAccountId,
+    provider,
+    enabled,
+    desktopIpc,
+    requestBrowserEngine,
+    attempt,
+  ]);
 
   useEffect(() => {
     // The desktop engine follows mailbox changes itself.
@@ -435,7 +447,7 @@ function MailEngineRuntimeInner({ children }: { children: ReactNode }) {
 
   return (
     <MailEngineRuntimeStatusContext.Provider
-      value={{ client, mounted: true, unavailable, requestBrowserEngine }}
+      value={{ client, mounted: true, failed, retry, requestBrowserEngine }}
     >
       <MailEngineProvider client={client}>{children}</MailEngineProvider>
     </MailEngineRuntimeStatusContext.Provider>

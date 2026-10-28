@@ -1,23 +1,24 @@
+import {
+  APICallError,
+  type Experimental_DecisionModelV4,
+  type Experimental_DecisionModelV4Answer,
+  type Experimental_DecisionModelV4Question,
+  type Experimental_DecisionModelV4State,
+  UnsupportedFunctionalityError,
+} from "@ai-sdk/provider";
 import { z } from "zod";
-import type {
-  DecisionModelConfig,
-  DecisionModelResponse,
-  DecisionQuestion,
-} from "./decision-model";
 
-const SYSTEM_ONE_API_URLS = {
-  typesafe: "https://api.typesafe.ai/v1/systemone",
-  openrouter: "https://openrouter.ai/api/v1/systemone",
-};
-const SYSTEM_ONE_TIMEOUT_MS = 30_000;
+const REQUEST_TIMEOUT_MS = 30_000;
 
 const probabilitySchema = z.number().min(0).max(1);
 
 const systemOneResponseSchema = z.object({
+  id: z.string().optional(),
   model: z.string(),
   usage: z.object({
     input_tokens: z.number().int().nonnegative(),
     output_tokens: z.number().int().nonnegative().optional().default(0),
+    cost: z.number().nonnegative().optional(),
   }),
   answers: z.record(
     z.string(),
@@ -25,7 +26,7 @@ const systemOneResponseSchema = z.object({
       z.object({
         type: z.literal("choice"),
         choice: z.string(),
-        confidence: probabilitySchema,
+        confidence: probabilitySchema.optional(),
         probabilities: z.record(z.string(), probabilitySchema),
       }),
       z.object({ type: z.literal("noul"), noul: probabilitySchema }),
@@ -33,60 +34,117 @@ const systemOneResponseSchema = z.object({
   ),
 });
 
-export async function decideWithSystemOne({
-  config,
-  state,
-  questions,
+/**
+ * TypeSafe's System One decision API, which OpenRouter also serves for every
+ * decision model it hosts. Neither ships an AI SDK decision model yet.
+ */
+export function createSystemOneDecisionModel({
+  provider,
+  url,
+  apiKey,
+  modelId,
 }: {
-  config: DecisionModelConfig;
-  state: Record<string, unknown>;
-  questions: Record<string, DecisionQuestion>;
-}): Promise<DecisionModelResponse> {
-  const response = await fetch(SYSTEM_ONE_API_URLS[config.provider], {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${config.apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: config.model,
-      state,
-      questions: Object.fromEntries(
-        Object.entries(questions).map(([key, question]) => [
-          key,
-          question.type === "yesNo"
-            ? {
-                type: "noul",
-                instructions: question.instructions,
-                criteria: question.criteria,
-              }
-            : question,
-        ]),
-      ),
-    }),
-    signal: AbortSignal.timeout(SYSTEM_ONE_TIMEOUT_MS),
-  });
-
-  if (!response.ok) {
-    const provider = config.provider === "typesafe" ? "TypeSafe" : "OpenRouter";
-    throw new Error(
-      `${provider} request failed with status ${response.status}`,
-    );
-  }
-
-  const body = systemOneResponseSchema.parse(await response.json());
-
+  provider: string;
+  url: string;
+  apiKey: string;
+  modelId: string;
+}): Experimental_DecisionModelV4 {
   return {
-    model: body.model,
-    inputTokens: body.usage.input_tokens,
-    outputTokens: body.usage.output_tokens,
-    answers: Object.fromEntries(
-      Object.entries(body.answers).map(([key, answer]) => [
-        key,
-        answer.type === "noul"
-          ? { type: "yesNo", probability: answer.noul }
-          : answer,
-      ]),
-    ),
+    specificationVersion: "v4",
+    provider,
+    modelId,
+    supportedQuestionTypes: ["choice", "boolean"],
+    async doDecide({ state, questions, headers, abortSignal }) {
+      const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          ...headers,
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: modelId,
+          state: toSystemOneState(state),
+          questions: Object.fromEntries(
+            Object.entries(questions).map(([id, question]) => [
+              id,
+              toSystemOneQuestion(question),
+            ]),
+          ),
+        }),
+        signal: abortSignal ? AbortSignal.any([abortSignal, timeout]) : timeout,
+      });
+
+      if (!response.ok) {
+        // The request body is email content, so it stays out of the error.
+        throw new APICallError({
+          message: `${provider} decision request failed with status ${response.status}`,
+          url,
+          requestBodyValues: { model: modelId },
+          statusCode: response.status,
+        });
+      }
+
+      const body = systemOneResponseSchema.parse(await response.json());
+
+      return {
+        answers: Object.fromEntries(
+          Object.entries(body.answers).map(([id, answer]) => [
+            id,
+            fromSystemOneAnswer(answer),
+          ]),
+        ),
+        // Distributions arrive rounded, and precision varies by hosted model.
+        rounding: { probabilityDecimals: 2 },
+        usage: {
+          inputTokens: body.usage.input_tokens,
+          outputTokens: body.usage.output_tokens,
+        },
+        warnings: [],
+        providerMetadata: {
+          [provider]: {
+            ...(body.usage.cost === undefined
+              ? {}
+              : { usage: { cost: body.usage.cost } }),
+            confidence: Object.fromEntries(
+              Object.entries(body.answers).flatMap(([id, answer]) =>
+                answer.type === "choice" && answer.confidence !== undefined
+                  ? [[id, answer.confidence]]
+                  : [],
+              ),
+            ),
+          },
+        },
+        response: { id: body.id, modelId: body.model },
+      };
+    },
+  };
+}
+
+function toSystemOneState(state: Experimental_DecisionModelV4State) {
+  const [part, ...rest] = state;
+  if (part?.type !== "json" || rest.length > 0) {
+    throw new UnsupportedFunctionalityError({
+      functionality: "decision state other than a single JSON part",
+    });
+  }
+  return part.value;
+}
+
+function toSystemOneQuestion(question: Experimental_DecisionModelV4Question) {
+  return question.type === "boolean" ? { ...question, type: "noul" } : question;
+}
+
+function fromSystemOneAnswer(
+  answer: z.infer<typeof systemOneResponseSchema>["answers"][string],
+): Experimental_DecisionModelV4Answer {
+  if (answer.type === "noul") {
+    return { type: "boolean", probability: answer.noul };
+  }
+  return {
+    type: "choice",
+    choice: answer.choice,
+    probabilities: answer.probabilities,
   };
 }

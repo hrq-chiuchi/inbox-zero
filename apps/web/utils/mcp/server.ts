@@ -19,6 +19,10 @@ import {
 import type { MCP_SCOPES } from "@/utils/mcp/config";
 import { isMcpServerEnabledForUser } from "@/utils/mcp/access";
 import {
+  registerMailClient,
+  getMailPermissions,
+} from "@/utils/mcp/mail-client-ui";
+import {
   createDraftForMcp,
   createDraftInputShape,
   mcpAccountSelectorShape,
@@ -35,10 +39,10 @@ const readOnlyAnnotations = {
   destructiveHint: false,
   openWorldHint: false,
 };
-const writeAnnotations = {
+const ruleWriteAnnotations = {
   readOnlyHint: false,
-  destructiveHint: false,
-  openWorldHint: false,
+  destructiveHint: true,
+  openWorldHint: true,
 };
 const destructiveAnnotations = {
   readOnlyHint: false,
@@ -115,6 +119,7 @@ export async function handleMcpServerRequest(
     },
     runTool("list_email_accounts", "mcp:read", async () => ({
       accounts: await listMcpEmailAccounts(userId),
+      permissions: getMailPermissions(session.scopes),
     })),
   );
 
@@ -265,7 +270,7 @@ export async function handleMcpServerRequest(
         ...mcpAccountSelectorShape,
         rule: ruleRequestBodySchema,
       },
-      annotations: { ...writeAnnotations, title: "Create rule" },
+      annotations: { ...ruleWriteAnnotations, title: "Create rule" },
     },
     runTool("create_rule", "mcp:write", async (args) => {
       const emailAccount = await resolveMcpEmailAccount({
@@ -319,7 +324,7 @@ export async function handleMcpServerRequest(
         id: z.string(),
         rule: ruleRequestBodySchema,
       },
-      annotations: { ...writeAnnotations, title: "Update rule" },
+      annotations: { ...ruleWriteAnnotations, title: "Update rule" },
     },
     runTool("update_rule", "mcp:write", async (args) => {
       const emailAccount = await resolveMcpEmailAccount({
@@ -494,6 +499,8 @@ export async function handleMcpServerRequest(
       };
     }),
   );
+
+  registerMailClient(server, session, toolLogger);
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,

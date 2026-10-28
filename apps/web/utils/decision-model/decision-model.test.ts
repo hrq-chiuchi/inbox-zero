@@ -6,8 +6,8 @@ const envMock = vi.hoisted(() => ({
   DEFAULT_DECISION_MODEL_ENABLED: false,
   TYPESAFE_API_KEY: undefined as string | undefined,
   OPENROUTER_API_KEY: undefined as string | undefined,
+  LLM_API_KEY: undefined as string | undefined,
 }));
-const decideWithSystemOneMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/env", () => ({ env: envMock }));
 vi.mock("@/utils/prisma");
@@ -15,10 +15,8 @@ vi.mock("@/utils/llms/model-usage-guard", () => ({
   assertTrialAiUsageAllowed: vi.fn(),
 }));
 vi.mock("@/utils/usage", () => ({ saveAiUsage: vi.fn() }));
-vi.mock("@/utils/decision-model/system-one", () => ({
-  decideWithSystemOne: decideWithSystemOneMock,
-}));
 
+import { Experimental_DecisionMockModelV4 } from "ai/test";
 import prisma from "@/utils/__mocks__/prisma";
 import { saveAiUsage } from "@/utils/usage";
 import {
@@ -28,18 +26,18 @@ import {
 } from "./decision-model";
 
 const logger = createTestLogger();
+const doDecide = vi.fn();
 const config = {
   provider: "typesafe" as const,
-  model: "test-model",
-  apiKey: "test-key",
+  modelId: "test-model",
+  model: new Experimental_DecisionMockModelV4({ doDecide }),
 };
+const appliesQuestion = {
+  applies: { type: "boolean", instructions: "Does it apply?" },
+} as const;
 
 describe("getDecisionModelConfig", () => {
-  const deploymentConfig = {
-    provider: "typesafe",
-    model: "jev-latest",
-    apiKey: "key",
-  };
+  const deploymentConfig = { provider: "typesafe", modelId: "jev-latest" };
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -47,6 +45,7 @@ describe("getDecisionModelConfig", () => {
     envMock.DEFAULT_DECISION_MODEL_ENABLED = false;
     envMock.TYPESAFE_API_KEY = "key";
     envMock.OPENROUTER_API_KEY = undefined;
+    envMock.LLM_API_KEY = undefined;
   });
 
   function mockUserSetting(
@@ -66,40 +65,40 @@ describe("getDecisionModelConfig", () => {
     expect(prisma.user.findUnique).not.toHaveBeenCalled();
   });
 
-  it("returns null when the provider key is missing", async () => {
+  it("returns null when the TypeSafe key is missing, even with LLM_API_KEY", async () => {
     envMock.TYPESAFE_API_KEY = undefined;
+    envMock.LLM_API_KEY = "shared-key";
     mockUserSetting(true);
 
     expect(await getDecisionModelConfig(getEmailAccount())).toBeNull();
   });
 
-  it("selects OpenRouter credentials without requiring a TypeSafe key", async () => {
-    envMock.DEFAULT_DECISION_MODEL = "openrouter:typesafe/jev-1.13";
-    envMock.TYPESAFE_API_KEY = undefined;
+  it("resolves OpenRouter decision models with the OpenRouter key", async () => {
+    envMock.DEFAULT_DECISION_MODEL = "openrouter:cloudflare/clef";
     envMock.OPENROUTER_API_KEY = "openrouter-key";
     mockUserSetting(true);
 
-    expect(await getDecisionModelConfig(getEmailAccount())).toEqual({
+    const config = await getDecisionModelConfig(getEmailAccount());
+
+    expect(config).toMatchObject({
       provider: "openrouter",
-      model: "typesafe/jev-1.13",
-      apiKey: "openrouter-key",
+      modelId: "cloudflare/clef",
+      model: { provider: "openrouter", modelId: "cloudflare/clef" },
     });
   });
 
-  it("does not use a TypeSafe key for an OpenRouter decision model", async () => {
-    envMock.DEFAULT_DECISION_MODEL = "openrouter:typesafe/jev-1.13";
+  it("falls back to LLM_API_KEY when the provider key is unset or blank", async () => {
+    envMock.DEFAULT_DECISION_MODEL = "openrouter:cloudflare/clef";
+    envMock.OPENROUTER_API_KEY = "  ";
     mockUserSetting(true);
-
     expect(await getDecisionModelConfig(getEmailAccount())).toBeNull();
-  });
 
-  it("retains the direct TypeSafe key when both provider keys exist", async () => {
-    envMock.OPENROUTER_API_KEY = "openrouter-key";
-    mockUserSetting(true);
+    envMock.LLM_API_KEY = "shared-key";
 
-    expect(await getDecisionModelConfig(getEmailAccount())).toEqual(
-      deploymentConfig,
-    );
+    expect(await getDecisionModelConfig(getEmailAccount())).toMatchObject({
+      provider: "openrouter",
+      modelId: "cloudflare/clef",
+    });
   });
 
   it("is opt-in when the deployment default is off", async () => {
@@ -107,7 +106,7 @@ describe("getDecisionModelConfig", () => {
     expect(await getDecisionModelConfig(getEmailAccount())).toBeNull();
 
     mockUserSetting(true);
-    expect(await getDecisionModelConfig(getEmailAccount())).toEqual(
+    expect(await getDecisionModelConfig(getEmailAccount())).toMatchObject(
       deploymentConfig,
     );
   });
@@ -116,7 +115,7 @@ describe("getDecisionModelConfig", () => {
     envMock.DEFAULT_DECISION_MODEL_ENABLED = true;
 
     mockUserSetting(null);
-    expect(await getDecisionModelConfig(getEmailAccount())).toEqual(
+    expect(await getDecisionModelConfig(getEmailAccount())).toMatchObject(
       deploymentConfig,
     );
 
@@ -131,7 +130,7 @@ describe("getDecisionModelConfig", () => {
     expect(await getDecisionModelConfig(getEmailAccount())).toBeNull();
 
     mockUserSetting(true, "user-key");
-    expect(await getDecisionModelConfig(getEmailAccount())).toEqual(
+    expect(await getDecisionModelConfig(getEmailAccount())).toMatchObject(
       deploymentConfig,
     );
   });
@@ -148,49 +147,64 @@ describe("runDecisionModel", () => {
         config,
         emailAccount: { ...getEmailAccount(), sensitiveDataPolicy: "BLOCK" },
         state: { content: `client_secret=${"c".repeat(24)}` },
-        questions: {},
+        questions: appliesQuestion,
         label: "test",
         logger,
       }),
     ).rejects.toThrow("blocked by your account settings");
-    expect(decideWithSystemOneMock).not.toHaveBeenCalled();
+    expect(doDecide).not.toHaveBeenCalled();
   });
 
   it("sends redacted state to the provider under a REDACT policy", async () => {
     const secret = "c".repeat(24);
-    decideWithSystemOneMock.mockResolvedValue({
-      model: "test-model",
-      inputTokens: 1,
-      outputTokens: 0,
-      answers: {},
-    });
+    doDecide.mockResolvedValue(
+      decisionResult({ applies: { type: "boolean", probability: 0.5 } }),
+    );
 
     await runDecisionModel({
       config,
       emailAccount: { ...getEmailAccount(), sensitiveDataPolicy: "REDACT" },
       state: { content: `client_secret=${secret}` },
-      questions: {},
+      questions: appliesQuestion,
       label: "test",
       logger,
     });
 
-    const sent = JSON.stringify(decideWithSystemOneMock.mock.calls[0]?.[0]);
+    const sent = JSON.stringify(doDecide.mock.calls[0]?.[0].state);
     expect(sent).not.toContain(secret);
   });
 
-  it("records usage for the configured model", async () => {
-    decideWithSystemOneMock.mockResolvedValue({
-      model: "test-model",
-      inputTokens: 1200,
-      outputTokens: 12,
-      answers: {},
+  it("sends state with undefined fields, such as a missing header", async () => {
+    doDecide.mockResolvedValue(
+      decisionResult({ applies: { type: "boolean", probability: 0.5 } }),
+    );
+
+    await runDecisionModel({
+      config,
+      emailAccount: getEmailAccount(),
+      state: { email: { subject: "Hi", to: undefined } },
+      questions: appliesQuestion,
+      label: "test",
+      logger,
+    });
+
+    expect(doDecide.mock.calls[0]?.[0].state).toStrictEqual([
+      { type: "json", value: { email: { subject: "Hi" } } },
+    ]);
+  });
+
+  it("records usage and provider-reported cost for the configured model", async () => {
+    doDecide.mockResolvedValue({
+      ...decisionResult({ applies: { type: "boolean", probability: 0.5 } }),
+      usage: { inputTokens: 1200, outputTokens: 12 },
+      providerMetadata: { typesafe: { usage: { cost: 0.0003 } } },
     });
 
     await runDecisionModel({
       config,
       emailAccount: getEmailAccount(),
       state: {},
-      questions: {},
+      questions: appliesQuestion,
       label: "test",
       logger,
     });
@@ -200,6 +214,7 @@ describe("runDecisionModel", () => {
         provider: "typesafe",
         model: "test-model",
         label: "test",
+        providerReportedCost: 0.0003,
         usage: expect.objectContaining({
           inputTokens: 1200,
           outputTokens: 12,
@@ -209,38 +224,39 @@ describe("runDecisionModel", () => {
     );
   });
 
-  it("records OpenRouter decision usage under OpenRouter rather than TypeSafe", async () => {
-    decideWithSystemOneMock.mockResolvedValue({
-      model: "typesafe/jev-1.13",
-      inputTokens: 42,
-      outputTokens: 0,
-      answers: { applies: { type: "yesNo", probability: 0.8 } },
+  it("uses provider-reported choice confidence, else the chosen probability", async () => {
+    doDecide.mockResolvedValue({
+      ...decisionResult({
+        reported: {
+          type: "choice",
+          choice: "a",
+          probabilities: { a: 0.9, b: 0.1 },
+        },
+        derived: {
+          type: "choice",
+          choice: "b",
+          probabilities: { a: 0.2, b: 0.8 },
+        },
+      }),
+      providerMetadata: { typesafe: { confidence: { reported: 0.6 } } },
     });
 
-    await runDecisionModel({
-      config: {
-        provider: "openrouter",
-        model: "typesafe/jev-1.13",
-        apiKey: "openrouter-key",
-      },
+    const choice = {
+      type: "choice",
+      instructions: "Pick one",
+      criteria: { a: "A", b: "B" },
+    } as const;
+    const response = await runDecisionModel({
+      config,
       emailAccount: getEmailAccount(),
       state: {},
-      questions: {},
+      questions: { reported: choice, derived: choice },
       label: "test",
       logger,
     });
 
-    expect(saveAiUsage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        provider: "openrouter",
-        model: "typesafe/jev-1.13",
-        usage: expect.objectContaining({
-          inputTokens: 42,
-          outputTokens: 0,
-          totalTokens: 42,
-        }),
-      }),
-    );
+    expect(response.answers.reported).toMatchObject({ confidence: 0.6 });
+    expect(response.answers.derived).toMatchObject({ confidence: 0.8 });
   });
 });
 
@@ -250,7 +266,6 @@ describe("runDecisionModelOrFallback", () => {
     envMock.DEFAULT_DECISION_MODEL = "typesafe:jev-latest";
     envMock.DEFAULT_DECISION_MODEL_ENABLED = false;
     envMock.TYPESAFE_API_KEY = "key";
-    envMock.OPENROUTER_API_KEY = undefined;
   });
 
   it("keeps the original path when the decision model is not enabled", async () => {
@@ -310,39 +325,8 @@ describe("runDecisionModelOrFallback", () => {
     expect(decide).not.toHaveBeenCalled();
     expect(fallback).toHaveBeenCalledOnce();
   });
-
-  it("uses the normal LLM path without recording decision usage when OpenRouter fails", async () => {
-    envMock.DEFAULT_DECISION_MODEL = "openrouter:typesafe/jev-1.13";
-    envMock.TYPESAFE_API_KEY = undefined;
-    envMock.OPENROUTER_API_KEY = "openrouter-key";
-    prisma.user.findUnique.mockResolvedValue({
-      decisionModelEnabled: true,
-      aiApiKey: null,
-    } as never);
-    decideWithSystemOneMock.mockRejectedValue(
-      new Error("OpenRouter request failed with status 429"),
-    );
-    const emailAccount = getEmailAccount();
-    const fallback = vi.fn().mockResolvedValue("normal-llm-result");
-
-    const result = await runDecisionModelOrFallback({
-      emailAccount,
-      logger,
-      feature: "test",
-      decide: (decisionConfig) =>
-        runDecisionModel({
-          config: decisionConfig,
-          emailAccount,
-          state: {},
-          questions: {},
-          label: "test",
-          logger,
-        }),
-      fallback,
-    });
-
-    expect(result).toBe("normal-llm-result");
-    expect(fallback).toHaveBeenCalledOnce();
-    expect(saveAiUsage).not.toHaveBeenCalled();
-  });
 });
+
+function decisionResult(answers: Record<string, unknown>) {
+  return { answers, warnings: [] };
+}

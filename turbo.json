@@ -58,6 +58,9 @@
         "APNS_TOPIC",
         "APNS_ENVIRONMENT",
         "APNS_TRANSPORT",
+        "FCM_SERVICE_ACCOUNT_JSON",
+        "FCM_PROJECT_ID",
+        "FCM_TRANSPORT",
         "ANDROID_APP_CERT_SHA256_FINGERPRINTS",
 
         "DEFAULT_LLMS",
@@ -169,6 +172,7 @@
         "POSTHOG_FEEDBACK_SURVEY_QUESTION_ID",
         "POSTHOG_LLM_EVALS_APPROVED_EMAILS",
         "FEEDBACK_WEBHOOK_URL",
+        "SALES_INQUIRY_WEBHOOK_URL",
 
         "RECALL_API_KEY",
         "RECALL_WEBHOOK_SECRET",
@@ -181,9 +185,9 @@
         "NEXT_PUBLIC_IS_RESEND_CONFIGURED",
 
         "LOOPS_API_SECRET",
+        "LOOPS_WEBHOOK_SIGNING_SECRET",
 
         "CRON_SECRET",
-        "MAIL_UPLOAD_DIR",
         "BLOG_SYNC_WEBHOOK_SECRET",
         "BLOG_SYNC_SANITY_AUTHOR_ID",
         "BLOG_SYNC_IMAGE_ALLOWED_HOSTS",
@@ -203,6 +207,7 @@
         "MCP_SERVER_ENABLED",
         "DEFAULT_DECISION_MODEL",
         "DEFAULT_DECISION_MODEL_ENABLED",
+        "DECISION_MODEL_COLD_EMAIL_ENABLED",
         "TYPESAFE_API_KEY",
         "IMAGE_PROXY_SIGNING_SECRET",
         "IS_OAUTH_PROXY_SERVER",
@@ -270,6 +275,7 @@
         "NEXT_PUBLIC_SLACK_BOT_NAME",
         "NEXT_PUBLIC_SELF_HOSTED_LOGIN_FOOTER_TEXT",
         "NEXT_PUBLIC_CONTACTS_ENABLED",
+        "NEXT_PUBLIC_COOKIE_CONSENT_ENABLED",
         "NEXT_PUBLIC_MAIL_ENGINE_TEST_INSPECT",
         "NEXT_PUBLIC_GMAIL_OTHER_CONTACTS_ENABLED",
         "NEXT_PUBLIC_EMAIL_SEND_ENABLED",
@@ -306,7 +312,7 @@
         "UNSUBSCRIBE_WORKER_URL",
         "UNSUBSCRIBE_WORKER_SECRET"
       ],
-      "outputs": [".next/**", "!.next/cache/**", "public/sw.js", "public/sw.js.map"]
+      "outputs": [".next/**", "!.next/cache/**", "public/sw.js", "public/sw.js.map", "generated/mcp-app/**"]
     },
     "build:ci": {
       "env": [
@@ -352,6 +358,9 @@
         "APNS_TOPIC",
         "APNS_ENVIRONMENT",
         "APNS_TRANSPORT",
+        "FCM_SERVICE_ACCOUNT_JSON",
+        "FCM_PROJECT_ID",
+        "FCM_TRANSPORT",
         "ANDROID_APP_CERT_SHA256_FINGERPRINTS",
         "GOOGLE_PUBSUB_TOPIC_NAME",
         "EMAIL_ENCRYPT_SECRET",
@@ -409,6 +418,7 @@
         "NEXT_PUBLIC_SLACK_BOT_NAME",
         "NEXT_PUBLIC_SELF_HOSTED_LOGIN_FOOTER_TEXT",
         "NEXT_PUBLIC_CONTACTS_ENABLED",
+        "NEXT_PUBLIC_COOKIE_CONSENT_ENABLED",
         "NEXT_PUBLIC_MAIL_ENGINE_TEST_INSPECT",
         "NEXT_PUBLIC_GMAIL_OTHER_CONTACTS_ENABLED",
         "NEXT_PUBLIC_EMAIL_SEND_ENABLED",
@@ -445,7 +455,7 @@
         "UNSUBSCRIBE_WORKER_URL",
         "UNSUBSCRIBE_WORKER_SECRET"
       ],
-      "outputs": [".next/**", "!.next/cache/**", "public/sw.js", "public/sw.js.map"]
+      "outputs": [".next/**", "!.next/cache/**", "public/sw.js", "public/sw.js.map", "generated/mcp-app/**"]
     },
     "test": {
       "env": ["RUN_AI_TESTS"]

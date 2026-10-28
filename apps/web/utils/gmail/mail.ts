@@ -28,7 +28,10 @@ import { formatReplySubject } from "@/utils/email/subject";
 import { buildThreadingHeaders } from "@/utils/email/threading";
 import { ensureEmailSendingEnabled } from "@/utils/mail";
 import { getMessage } from "@/utils/gmail/message";
-import { getGmailMessageAttachments } from "@/utils/gmail/attachment";
+import {
+  getGmailAttachment,
+  getGmailMessageAttachments,
+} from "@/utils/gmail/attachment";
 import { getDraftIdForMessage } from "@/utils/gmail/draft";
 import { SafeError } from "@/utils/error";
 import { GmailLabel } from "@/utils/gmail/label";
@@ -49,13 +52,15 @@ const encodeMessage = (message: Buffer) =>
     .replace(/\//g, "_")
     .replace(/=+$/, "");
 
-export const createMail = async (options: Mail.Options) => {
+export async function buildMailMessage(options: Mail.Options) {
   const mailComposer = new MailComposer(options);
   const compiledMessage = mailComposer.compile();
   compiledMessage.keepBcc = true;
-  const message = await compiledMessage.build();
-  return encodeMessage(message);
-};
+  return compiledMessage.build();
+}
+
+export const createMail = async (options: Mail.Options) =>
+  encodeMessage(await buildMailMessage(options));
 
 const createRawMailMessage = async ({
   to,
@@ -117,10 +122,10 @@ export async function sendEmailWithHtml(
     messageText = stripHtmlTagsForPlainText(body.messageHtml).trim();
   }
 
-  const forwardedAttachments = await getForwardedAttachments(
-    gmail,
-    body.replyToEmail?.forwardedMessageId,
-  );
+  const forwardedAttachments = body.replyToEmail?.forwardedMessageId
+    ? (await getForwardedMessage(gmail, body.replyToEmail.forwardedMessageId))
+        .attachments
+    : [];
 
   const raw = await createRawMailMessage({
     ...body,
@@ -202,6 +207,8 @@ export async function replyToEmail(
   from?: string,
   options?: {
     replyTo?: string;
+    cc?: string;
+    bcc?: string;
     attachments?: Attachment[];
   },
 ) {
@@ -220,6 +227,8 @@ export async function replyToEmail(
   const raw = await createRawMailMessage({
     to: message.headers["reply-to"] || message.headers.from,
     from,
+    cc: options?.cc,
+    bcc: options?.bcc,
     replyTo: options?.replyTo,
     subject: formatReplySubject(message.headers.subject),
     messageText,
@@ -265,20 +274,32 @@ export async function forwardEmail(
   }
 
   const attachments = await Promise.all(
-    message.attachments?.map(async (attachment) => {
-      const attachmentData = await withGmailRetry(() =>
-        gmail.users.messages.attachments.get({
-          userId: "me",
-          messageId: message.id,
-          id: attachment.attachmentId,
-        }),
-      );
-      return {
-        content: Buffer.from(attachmentData.data.data || "", "base64"),
-        contentType: attachment.mimeType,
-        filename: attachment.filename,
-      };
-    }) || [],
+    [...(message.attachments ?? []), ...(message.inline ?? [])].map(
+      async (attachment): Promise<Attachment> => {
+        const attachmentData = await getGmailAttachment(
+          gmail,
+          message.id,
+          attachment.attachmentId,
+        );
+        const contentId = attachment.headers["content-id"]
+          ?.trim()
+          .replace(/^<|>$/g, "");
+        const disposition = attachment.headers["content-disposition"]
+          ?.split(";")[0]
+          .trim()
+          .toLowerCase();
+        return {
+          cid: contentId || undefined,
+          contentDisposition:
+            disposition === "inline" || (!disposition && contentId)
+              ? "inline"
+              : "attachment",
+          content: Buffer.from(attachmentData.data || "", "base64url"),
+          contentType: attachment.mimeType,
+          filename: attachment.filename,
+        };
+      },
+    ),
   );
 
   const raw = await createRawMailMessage({
@@ -316,6 +337,7 @@ export async function draftEmail(
   originalEmail: EmailForAction,
   args: {
     to?: string;
+    from?: string;
     subject?: string;
     content: string;
     cc?: string;
@@ -347,6 +369,7 @@ export async function draftEmail(
 
   const raw = await createRawMailMessage({
     to: recipients.to,
+    from: args.from,
     cc: formatCcList(ccList),
     bcc: formatCcList(bccList),
     subject: args.subject || originalEmail.headers.subject,
@@ -509,16 +532,14 @@ async function trackGmailSend<T>(
 }
 
 /**
- * Graph carries a forward's files across on its own, but a Gmail send composes
- * its own MIME, so the parts of the message being forwarded have to be fetched
- * and re-attached.
+ * Graph carries a forward's files across on its own, but a Gmail send or
+ * draft composes its own MIME, so the parts of the message being forwarded
+ * have to be fetched and re-attached.
  */
-async function getForwardedAttachments(
+export async function getForwardedMessage(
   gmail: gmail_v1.Gmail,
-  forwardedMessageId: string | undefined,
-): Promise<Attachment[]> {
-  if (!forwardedMessageId) return [];
-
+  forwardedMessageId: string,
+): Promise<{ threadId?: string; attachments: Attachment[] }> {
   const message = await getMessage(forwardedMessageId, gmail).catch(
     (error: unknown) => {
       if (extractErrorInfo(error).status !== 404) throw error;
@@ -530,11 +551,14 @@ async function getForwardedAttachments(
 
   // A part that fails to download fails the send: silently dropping one file
   // from a forward is worse than asking the user to try again.
-  return await getGmailMessageAttachments(
-    gmail,
-    forwardedMessageId,
-    message.payload,
-  );
+  return {
+    threadId: message.threadId ?? undefined,
+    attachments: await getGmailMessageAttachments(
+      gmail,
+      forwardedMessageId,
+      message.payload,
+    ),
+  };
 }
 
 function getGmailSendMetadata(raw: string, body: MailSendEmailBody) {

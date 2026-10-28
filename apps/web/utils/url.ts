@@ -76,6 +76,8 @@ type DraftLinkTarget = {
   externalUrl?: string | null;
 };
 
+type SearchField = "from" | "to";
+
 type ProviderUrlConfig = {
   requiresMessageId: boolean;
   buildUrl: (messageOrThreadId: string, emailAddress?: string | null) => string;
@@ -84,7 +86,11 @@ type ProviderUrlConfig = {
     emailAddress?: string | null,
   ) => string | null;
   selectId: (messageId: string, threadId: string) => string;
-  buildSearchUrl: (from: string, emailAddress?: string | null) => string;
+  buildSearchUrl: (
+    field: SearchField,
+    address: string,
+    emailAddress?: string | null,
+  ) => string;
 };
 
 const GOOGLE_CONFIG: ProviderUrlConfig = {
@@ -100,9 +106,13 @@ const GOOGLE_CONFIG: ProviderUrlConfig = {
       emailAddress,
     ),
   selectId: (messageId: string, _threadId: string) => messageId,
-  buildSearchUrl: (from: string, emailAddress?: string | null) =>
+  buildSearchUrl: (
+    field: SearchField,
+    address: string,
+    emailAddress?: string | null,
+  ) =>
     getGmailUrlForFragment(
-      `advanced-search/from=${encodeURIComponent(from)}`,
+      `advanced-search/${field}=${encodeURIComponent(address)}`,
       emailAddress,
     ),
 };
@@ -123,8 +133,12 @@ const PROVIDER_CONFIG: Record<string, ProviderUrlConfig> = {
         : null;
     },
     selectId: (messageId: string, _threadId: string) => messageId,
-    buildSearchUrl: (from: string, emailAddress?: string | null) => {
-      const query = encodeURIComponent(`from:${from}`);
+    buildSearchUrl: (
+      field: SearchField,
+      address: string,
+      emailAddress?: string | null,
+    ) => {
+      const query = encodeURIComponent(`${field}:${address}`);
       return `${getOutlookBaseUrl(isPersonalMicrosoftEmail(emailAddress))}/search/q/${query}`;
     },
   },
@@ -214,12 +228,16 @@ export function getEmailUrlForOptionalMessage({
   threadId,
   emailAddress,
   provider,
+  externalUrl,
 }: {
   messageId?: string | null;
   threadId?: string | null;
   emailAddress?: string | null;
   provider?: string;
+  externalUrl?: string | null;
 }) {
+  if (provider === "microsoft") return toOutlookReadingPaneUrl(externalUrl);
+
   const config = getProviderConfig(provider);
   if (config.requiresMessageId && !messageId) return null;
 
@@ -245,7 +263,7 @@ export function getGmailUrl(
 
 export function getGmailSearchUrl(from: string, emailAddress?: string | null) {
   const config = getProviderConfig("google");
-  return config.buildSearchUrl(from, emailAddress);
+  return config.buildSearchUrl("from", from, emailAddress);
 }
 
 const OPEN_IN_MAILBOX_LABELS: Record<string, string> = {
@@ -260,14 +278,15 @@ export function getOpenInMailboxLabel(provider?: string | null) {
 }
 
 export function getEmailSearchUrl(
-  from: string,
+  address: string,
   emailAddress?: string | null,
   provider?: string,
+  field: SearchField = "from",
 ) {
   const config = provider ? PROVIDER_CONFIG[provider] : undefined;
   if (!config)
-    return PROVIDER_CONFIG.default.buildSearchUrl(from, emailAddress);
-  return config.buildSearchUrl(from, emailAddress);
+    return PROVIDER_CONFIG.default.buildSearchUrl(field, address, emailAddress);
+  return config.buildSearchUrl(field, address, emailAddress);
 }
 
 export function getGmailBasicSearchUrl(emailAddress: string, query: string) {

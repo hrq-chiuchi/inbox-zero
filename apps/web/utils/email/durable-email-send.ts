@@ -23,7 +23,6 @@ export async function executeDurableEmailSend({
   input,
   logger,
   provider,
-  attachmentIds = [],
 }: {
   emailAccountId: string;
   getEmailProvider: () => Promise<EmailProvider>;
@@ -31,7 +30,6 @@ export async function executeDurableEmailSend({
   input: Omit<DurableEmailSendBody, "threadId"> & { threadId: string | null };
   logger: Logger;
   provider: string;
-  attachmentIds?: string[];
 }) {
   logger = logger.with({ mutationId: input.mutationId });
   const payloadHash = createHash("sha256")
@@ -57,7 +55,6 @@ export async function executeDurableEmailSend({
         emailAccountId,
         mutationId: input.mutationId,
         payloadHash,
-        attachmentIds,
       });
   if (existing.payloadHash !== payloadHash) {
     return { status: "rejected" as const, error: "Mutation ID was reused" };
@@ -168,12 +165,10 @@ async function createEmailSendOperation({
   emailAccountId,
   mutationId,
   payloadHash,
-  attachmentIds,
 }: {
   emailAccountId: string;
   mutationId: string;
   payloadHash: string;
-  attachmentIds: string[];
 }) {
   try {
     const operation = await prisma.emailSendOperation.create({
@@ -181,7 +176,6 @@ async function createEmailSendOperation({
         clientMutationId: mutationId,
         emailAccountId,
         payloadHash,
-        attachmentIds,
       },
     });
     return { ...operation, created: true };

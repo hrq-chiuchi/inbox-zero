@@ -13,16 +13,18 @@ import type { OutlookClient } from "@/utils/outlook/client";
 import { OutlookLabel, WELL_KNOWN_FOLDERS } from "./constants";
 import { escapeODataString } from "@/utils/outlook/odata-escape";
 import { withMicrosoftGraphRetry } from "@/utils/outlook/retry";
+import { isNotFoundError } from "@/utils/outlook/errors";
 import { formatEmailWithName } from "@/utils/email";
 import type { Logger } from "@/utils/logger";
 import { isOutlookThrottlingError } from "@/utils/error";
+import { isMicrosoftEmulationEnabled } from "@/utils/outlook/oauth";
 import { resolveMicrosoftGraphNextLink } from "@/utils/outlook/page-token";
 
 // Standard fields to select when fetching messages from Microsoft Graph API
 // internetMessageId is the RFC 5322 Message-ID header, needed for cross-provider email threading
 export const MESSAGE_LIST_SELECT_FIELDS =
-  "id,conversationId,conversationIndex,internetMessageId,subject,bodyPreview,from,sender,toRecipients,ccRecipients,receivedDateTime,createdDateTime,isDraft,isRead,flag,categories,parentFolderId,hasAttachments,webLink,inferenceClassification";
-export const MESSAGE_SELECT_FIELDS = `${MESSAGE_LIST_SELECT_FIELDS},body,internetMessageHeaders`;
+  "id,conversationId,conversationIndex,internetMessageId,subject,bodyPreview,from,sender,replyTo,toRecipients,ccRecipients,receivedDateTime,createdDateTime,isDraft,isRead,flag,categories,parentFolderId,hasAttachments,webLink,inferenceClassification";
+export const MESSAGE_SELECT_FIELDS = `${MESSAGE_LIST_SELECT_FIELDS},bccRecipients,body,internetMessageHeaders`;
 
 // contentId belongs to fileAttachment, so selecting it without this type cast
 // makes Graph reject the entire attachment collection query.
@@ -225,33 +227,25 @@ export function sanitizeKqlValue(value: string): string {
 
 /**
  * Sanitizes a KQL field query (e.g., participants:email@example.com).
- * Does NOT wrap the entire query in outer quotes - only quotes the value if it contains spaces.
+ * Graph rejects an unquoted property-scoped $search with "character ':' is not valid",
+ * so the whole expression is quoted and the value is quoted inside it.
  */
 export function sanitizeKqlFieldQuery(query: string): string {
   const colonIndex = query.indexOf(":");
   if (colonIndex === -1) return query;
 
   const field = query.slice(0, colonIndex);
-  const value = query.slice(colonIndex + 1);
+  const value = unwrapQuotes(
+    query
+      .slice(colonIndex + 1)
+      .replace(OUTLOOK_SEARCH_DISALLOWED_CHARS, " ")
+      .replace(/\s+/g, " ")
+      .trim(),
+  ).trim();
 
-  if (!value) {
-    return `${field}:`;
-  }
+  if (!value) return `${field}:`;
 
-  let sanitizedValue = value
-    .replace(OUTLOOK_SEARCH_DISALLOWED_CHARS, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  const hasSpaces = sanitizedValue.includes(" ");
-
-  sanitizedValue = escapeSearchValue(sanitizedValue);
-
-  if (hasSpaces) {
-    return `${field}:"${sanitizedValue}"`;
-  }
-
-  return `${field}:${sanitizedValue}`;
+  return JSON.stringify(`${field}:"${escapeSearchValue(value)}"`);
 }
 
 /**
@@ -585,11 +579,7 @@ export async function queryBatchMessages(
 
   const nextLink = resolveMicrosoftGraphNextLink(pageToken);
   if (nextLink) {
-    const response: { value: Message[]; "@odata.nextLink"?: string } =
-      await withMicrosoftGraphRetry(
-        () => client.getClient().api(nextLink).get(),
-        logger,
-      );
+    const response = await getContinuationPage(client, nextLink, logger);
 
     const filteredMessages = response.value.filter((message) => {
       if (
@@ -605,7 +595,15 @@ export async function queryBatchMessages(
       }
       return matchesOutlookMetadataFilters(message, metadataSearch.filters);
     });
-    const messages = await parseMessages(filteredMessages);
+    const isSearchPage = new URL(
+      nextLink,
+      "https://graph.microsoft.com",
+    ).searchParams.has("$search");
+    const messages = await parseMessages(
+      isSearchPage
+        ? await normalizeOutlookSearchIds(client, filteredMessages, logger)
+        : filteredMessages,
+    );
 
     return { messages, nextPageToken: response["@odata.nextLink"] };
   }
@@ -676,7 +674,9 @@ export async function queryBatchMessages(
       }
       return matchesOutlookMetadataFilters(message, metadataSearch.filters);
     });
-    const messages = await parseMessages(filteredMessages);
+    const messages = await parseMessages(
+      await normalizeOutlookSearchIds(client, filteredMessages, logger),
+    );
 
     nextPageToken = response["@odata.nextLink"];
 
@@ -919,6 +919,24 @@ export async function queryMessagesWithAttachments(
   };
 }
 
+/** The message as MIME, headers and parts included. */
+export async function getRawMessage(
+  messageId: string,
+  client: OutlookClient,
+  logger: Logger,
+): Promise<Buffer> {
+  const raw: ArrayBuffer = await withMicrosoftGraphRetry(
+    () =>
+      client
+        .getClient()
+        .api(`/me/messages/${encodeURIComponent(messageId)}/$value`)
+        .responseType(ResponseType.ARRAYBUFFER)
+        .get(),
+    logger,
+  );
+  return Buffer.from(raw);
+}
+
 export async function getMessage(
   messageId: string,
   client: OutlookClient,
@@ -1136,7 +1154,9 @@ export function convertMessage(
           message.from?.emailAddress?.address,
         ) || "",
       to: formatRecipientsList(message.toRecipients) || "",
+      "reply-to": formatRecipientsList(message.replyTo),
       cc: formatRecipientsList(message.ccRecipients),
+      bcc: formatRecipientsList(message.bccRecipients),
       subject: message.subject || "",
       date,
       // RFC 5322 Message-ID header, needed for cross-provider email threading (e.g., Outlook -> Gmail)
@@ -1204,9 +1224,7 @@ function convertInlineAttachments(
       const contentId =
         ("contentId" in attachment && typeof attachment.contentId === "string"
           ? attachment.contentId
-          : undefined) ||
-        attachment.name ||
-        "";
+          : undefined) || "";
 
       return {
         filename: attachment.name || "",
@@ -1268,4 +1286,114 @@ function outlookMailboxText(search: ProviderMailboxSearch): string {
     })
     .join(" AND ");
   return JSON.stringify(expression);
+}
+
+async function normalizeOutlookSearchIds(
+  client: OutlookClient,
+  messages: Message[],
+  logger: Logger,
+): Promise<Message[]> {
+  const inputIds = [
+    ...new Set(messages.flatMap((message) => (message.id ? [message.id] : []))),
+  ];
+  if (!inputIds.length) return messages;
+
+  // The emulator already uses stable IDs and does not implement Exchange ID translation.
+  if (isMicrosoftEmulationEnabled()) return messages;
+
+  // Graph's $search can return folder-dependent REST IDs despite the ImmutableId preference.
+  const response: { value: { sourceId: string; targetId?: string }[] } =
+    await withMicrosoftGraphRetry(
+      () =>
+        client.getClient().api("/me/translateExchangeIds").post({
+          inputIds,
+          sourceIdType: "restId",
+          targetIdType: "restImmutableEntryId",
+        }),
+      logger,
+    );
+  const ids = new Map(
+    response.value.map((item) => [item.sourceId, item.targetId]),
+  );
+  const unresolvedIds = inputIds.filter((id) => !ids.get(id));
+  if (unresolvedIds.length) {
+    logger.warn("Some Outlook search messages could not be resolved", {
+      unresolvedCount: unresolvedIds.length,
+      messageCount: messages.length,
+    });
+    logger.trace("Unresolved Outlook search message IDs", {
+      messageIds: unresolvedIds,
+    });
+  }
+  return messages.flatMap((message) => {
+    const id = message.id ? ids.get(message.id) : null;
+    return id ? [{ ...message, id }] : [];
+  });
+}
+
+function unwrapQuotes(value: string): string {
+  return value.length > 1 && value.startsWith('"') && value.endsWith('"')
+    ? value.slice(1, -1)
+    : value;
+}
+
+type MessagesPage = { value: Message[]; "@odata.nextLink"?: string };
+
+// Page tokens come from the client, so cap how many single reads one can trigger.
+const MAX_CONTINUATION_PAGE_SIZE = 20;
+
+// Graph fails a whole page with a 404 when one message in it can't be read,
+// and that page fails the same way on every retry. Reading the page one message
+// at a time drops only the unreadable message so paging can move past it.
+async function getContinuationPage(
+  client: OutlookClient,
+  nextLink: string,
+  logger: Logger,
+): Promise<MessagesPage> {
+  const getPage = (url: string): Promise<MessagesPage> =>
+    withMicrosoftGraphRetry(() => client.getClient().api(url).get(), logger);
+
+  try {
+    return await getPage(nextLink);
+  } catch (error) {
+    const url = new URL(nextLink);
+    const skip = Number(url.searchParams.get("$skip") ?? Number.NaN);
+    const top = Number(url.searchParams.get("$top") ?? Number.NaN);
+    if (
+      !isNotFoundError(error) ||
+      url.searchParams.has("$search") ||
+      url.searchParams.has("$skiptoken") ||
+      !(skip >= 0) ||
+      !(top > 0 && top <= MAX_CONTINUATION_PAGE_SIZE)
+    )
+      throw error;
+
+    const messages: Message[] = [];
+    let unreadableCount = 0;
+    let hasMore = true;
+    for (let offset = skip; offset < skip + top && hasMore; offset++) {
+      url.searchParams.set("$top", "1");
+      url.searchParams.set("$skip", String(offset));
+      try {
+        const single = await getPage(url.toString());
+        messages.push(...single.value);
+        hasMore = Boolean(single["@odata.nextLink"]);
+      } catch (singleError) {
+        if (!isNotFoundError(singleError)) throw singleError;
+        unreadableCount++;
+      }
+    }
+    // A page with nothing readable is more likely a deleted folder than
+    // unreadable messages, so it keeps failing as before.
+    if (!messages.length) throw error;
+
+    logger.warn("Skipped unreadable Outlook messages in a page", {
+      unreadableCount,
+      skip,
+    });
+    if (!hasMore) return { value: messages };
+    url.searchParams.set("$top", String(top));
+    url.searchParams.set("$skip", String(skip + top));
+    return { value: messages, "@odata.nextLink": url.toString() };
+  }
 }

@@ -25,6 +25,8 @@ import type {
   TargetOutcome,
 } from "../operations";
 import type {
+  ContactSuggestion,
+  ContactSuggestionQuery,
   ConversationQuery,
   Coverage,
   MailPredicate,
@@ -123,16 +125,6 @@ export type ClaimedWork =
       session: AccountSession;
       predicate: MailPredicate;
       page: string | null;
-    }
-  | {
-      kind: "upload";
-      attemptId: string;
-      operation: PreparedOperation;
-      attachmentId: string;
-      checksum: string;
-      sizeBytes: number;
-      filename: string;
-      contentType: string;
     };
 
 export type SyncStreamPosition = {
@@ -354,16 +346,19 @@ export interface MailStore {
       conversationIds: string[];
     }>;
   }>;
+  indexContactBacklog(): Promise<{ remaining: boolean }>;
   /** Indexes one short batch of stored bodies missing from local search. */
   indexSearchBacklog(): Promise<{ remaining: boolean }>;
   inspect(input?: MailStoreInspectionInput): Promise<MailStoreInspection>;
-  listReferencedBlobIds(): Promise<string[]>;
   purgeAccount(accountId: string): Promise<LocalRevision>;
   readAccountSyncStates(): Promise<AccountSyncState[]>;
   readBootstrapScan(input: {
     session: AccountSession;
     scopeId: string;
   }): Promise<BootstrapScan | null>;
+  readContactSuggestions(
+    query: ContactSuggestionQuery,
+  ): Promise<ContactSuggestion[]>;
   readConversation(
     key: ConversationKey,
     page: { after: string | null; pageSize: number },
@@ -393,12 +388,6 @@ export interface MailStore {
     revision: LocalRevision;
     operation: OperationState | null;
   }>;
-  recordAttachmentUpload(input: {
-    operationId: string;
-    accountId: string;
-    attachmentId: string;
-    remoteUploadId: string;
-  }): Promise<LocalRevision>;
   /** Resolves `true` when the stored connection state changed. */
   recordConnection(input: {
     accountId: string;
@@ -435,16 +424,6 @@ export interface MailStore {
   }): Promise<
     { status: "committed"; revision: LocalRevision } | { status: "stale" }
   >;
-  stageDraftAttachment(input: {
-    accountId: string;
-    draftId: string | null;
-    attachmentId: string;
-    filename: string;
-    contentType: string;
-    checksum: string;
-    sizeBytes: number;
-    inline?: boolean;
-  }): Promise<{ status: "staged" } | { status: "rejected"; code: "invalid" }>;
   startBootstrapScan(input: {
     session: AccountSession;
     scopeId: string;
